@@ -6,25 +6,14 @@ edition = "2018"
 
 [dependencies]
 config = "*"
-http = "*"
-#native-tls = "*"
-#postgres = { version = "*", features = ["with-serde_json-1"] }
-#tokio-postgres = "*"
-#postgres-native-tls = "*"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "*"
-#serde_postgres = "*"
 
 futures = "*"
 telegram-bot = "*"
-#tbot = "*"
 tokio = { version = "0.2", features = ["macros" ] }
-#tokio-timer = "*"
 
 futures-util = "*"
 
 sqlx = { version = "*", features = [ "postgres", "tls", "runtime-async-std-native-tls", "chrono" ] }
-#async-std = { version = "*", features = [ "attributes" ] }
 
 regex = "*"
 
