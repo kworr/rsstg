@@ -1,0 +1,3 @@
+pg = "postgres://user:password@hostname/database"
+api_key = "speak with @BotFather to get one"
+owner = Your ID (for debugging)
