@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use config;
 
 use tokio;
@@ -68,6 +70,7 @@ impl Core {
 				let url: &str = row.try_get("url")?;
 				let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 				let iv_hash: Option<&str> = row.try_get("iv_hash")?;
+				let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
 				match rss::Channel::from_url(url) {
 					Ok(feed) => {
 						self.debug(&format!("# title:{:?} ttl:{:?} hours:{:?} days:{:?}", feed.title(), feed.ttl(), feed.skip_hours(), feed.skip_days()))?;
@@ -77,6 +80,9 @@ impl Core {
 								None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
 							}?;
 							let url = item.link().unwrap().to_string();
+							posts.insert(date.clone(), url.clone());
+						};
+						for (date, url) in posts.iter() {
 							match sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
 								.bind(&url)
 								.bind(id)
@@ -84,8 +90,8 @@ impl Core {
 								Ok(row) => {
 									let exists: bool = row.try_get("exists")?;
 									if ! exists {
-										if this_fetch == None || date > this_fetch.unwrap() {
-											this_fetch = Some(date);
+										if this_fetch == None || *date > this_fetch.unwrap() {
+											this_fetch = Some(*date);
 										}
 										match self.tg.send( match iv_hash {
 												Some(x) => SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", url, x)),
@@ -115,6 +121,7 @@ impl Core {
 								},
 							};
 						};
+						posts.clear();
 					},
 					Err(err) => {
 						self.debug(&err.to_string())?;
@@ -178,10 +185,10 @@ impl Core {
 		let mut now;
 		loop {
 			self.debug("cycle")?;
-			let mut rows = sqlx::query("select source_id, next_fetch from rsstg_order natural left join rsstg_source natural left join rsstg_channel;")
+			now = chrono::Local::now();
+			let mut rows = sqlx::query("select source_id, next_fetch from rsstg_order natural left join rsstg_source natural left join rsstg_channel where next_fetch < now();")
 				.fetch(&self.pool);
 			while let Some(row) = rows.try_next().await.unwrap() {
-				now = chrono::Local::now();
 				let source_id: i32 = row.try_get("source_id")?;
 				next_fetch = row.try_get("next_fetch")?;
 				if next_fetch < now {
