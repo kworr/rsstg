@@ -240,7 +240,7 @@ async fn main() -> Result<()> {
 	settings.merge(config::File::with_name("rsstg"))?;
 
 	let re_username = Regex::new(r"^@[a-zA-Z][a-zA-Z0-9_]+$")?;
-	let re_link = Regex::new(r"^https?://[a-zA-Z.0-9]+/[-_a-zA-Z.0-9/?=]+$")?;
+	let re_link = Regex::new(r"^https?://[a-zA-Z.0-9-]+/[-_a-zA-Z.0-9/?=]+$")?;
 	let re_iv_hash = Regex::new(r"^[a-f0-9]{14}$")?;
 
 	let core = Core::new(settings).await?;

@@ -33,7 +33,7 @@ create index rsstg_post__hour on rsstg_post(hour);
 create index rsstg_post__posted_hour on rsstg_post(posted,hour);
 
 create or replace view rsstg_order as
-	select source_id, coalesce(last_scrape + make_interval(0,0,0,0,0,(420 / coalesce(activity , 1))::integer), now() - interval '1 minute') as next_fetch
+	select source_id, coalesce(last_scrape + make_interval(0,0,0,0,0,(60 / (coalesce(activity, 1)/7 + 1) )::integer), now() - interval '1 minute') as next_fetch
 		from rsstg_source natural left join
 		(select source_id, count(*) as activity
 			from rsstg_post where 
