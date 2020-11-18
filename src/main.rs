@@ -55,19 +55,17 @@ impl Core {
 		Ok(())
 	}
 
-	async fn check(&self, channel: &str, real: Option<bool>) -> Result<()> {
-		match sqlx::query("select source_id, channel_id, url, last_fetch, iv_hash, owner from rsstg_source natural left join rsstg_channel where username = $1")
-			.bind(channel)
+	async fn check(&self, id: &i32, real: Option<bool>) -> Result<()> {
+		match sqlx::query("select source_id, channel_id, url, iv_hash, owner from rsstg_source where source_id = $1")
+			.bind(id)
 			.fetch_one(&self.pool).await {
 			Ok(row) => {
-				let id: i32 = row.try_get("source_id")?;
 				let channel_id: i64 = row.try_get("channel_id")?;
 				let destination = match real {
 					Some(true) => UserId::new(channel_id),
 					Some(false) | None => UserId::new(row.try_get("owner")?),
 				};
 				let url: &str = row.try_get("url")?;
-				let last_fetch: Option<DateTime<chrono::FixedOffset>> = row.try_get("last_fetch")?;
 				let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 				let iv_hash: Option<&str> = row.try_get("iv_hash")?;
 				match rss::Channel::from_url(url) {
@@ -79,58 +77,44 @@ impl Core {
 								None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
 							}?;
 							let url = item.link().unwrap().to_string();
-							if last_fetch == None || date > last_fetch.unwrap() {
-								match sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
-									.bind(&url)
-									.bind(id)
-									.fetch_one(&self.pool).await {
-									Ok(row) => {
-										let exists: bool = row.try_get("exists")?;
-										if ! exists {
-											if this_fetch == None || date > this_fetch.unwrap() {
-												this_fetch = Some(date);
-											}
-											match self.tg.send( match iv_hash {
-													Some(x) => SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", url, x)),
-													None => SendMessage::new(destination, format!("{}", url)),
-												}.parse_mode(types::ParseMode::Html)).await {
-												Ok(_) => {
-													match sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
-														.bind(id)
-														.bind(date)
-														.bind(url)
-														.execute(&self.pool).await {
-															Ok(_) => {},
-															Err(err) => {
-																self.debug(&err.to_string())?;
-															},
-													};
-												},
-												Err(err) => {
-													self.debug(&err.to_string())?;
-												},
-											};
-											tokio::time::delay_for(std::time::Duration::new(4, 0)).await;
-										}
-									},
-									Err(err) => {
-										self.debug(&err.to_string())?;
-									},
-								};
-							};
-						};
-						// update last_fetch
-						if this_fetch != None && (last_fetch == None || this_fetch.unwrap() > last_fetch.unwrap()) {
-							match sqlx::query("update rsstg_source set last_fetch = case when (last_fetch < $1) then $1 else last_fetch end where source_id = $2;")
-								.bind(this_fetch.unwrap())
+							match sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
+								.bind(&url)
 								.bind(id)
-								.execute(&self.pool).await {
-								Ok(_) => {},
+								.fetch_one(&self.pool).await {
+								Ok(row) => {
+									let exists: bool = row.try_get("exists")?;
+									if ! exists {
+										if this_fetch == None || date > this_fetch.unwrap() {
+											this_fetch = Some(date);
+										}
+										match self.tg.send( match iv_hash {
+												Some(x) => SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", url, x)),
+												None => SendMessage::new(destination, format!("{}", url)),
+											}.parse_mode(types::ParseMode::Html)).await {
+											Ok(_) => {
+												match sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
+													.bind(id)
+													.bind(date)
+													.bind(url)
+													.execute(&self.pool).await {
+														Ok(_) => {},
+														Err(err) => {
+															self.debug(&err.to_string())?;
+														},
+												};
+											},
+											Err(err) => {
+												self.debug(&err.to_string())?;
+											},
+										};
+										tokio::time::delay_for(std::time::Duration::new(4, 0)).await;
+									}
+								},
 								Err(err) => {
 									self.debug(&err.to_string())?;
 								},
 							};
-						}
+						};
 					},
 					Err(err) => {
 						self.debug(&err.to_string())?;
@@ -153,23 +137,20 @@ impl Core {
 	}
 
 	async fn clean(&self, source_id: i32) -> Result<()> {
-		for query in vec!["delete from rsstg_post where source_id = $1;", "update rsstg_source set last_fetch = NULL where source_id = $1;"] {
-			match sqlx::query(query)
-				.bind(source_id)
-				.execute(&self.pool).await {
-				Ok(_) => {},
-				Err(err) => {
-					self.debug(&err.to_string())?;
-				},
-			}
-		}
+		match sqlx::query("delete from rsstg_post where source_id = $1;")
+			.bind(source_id)
+			.execute(&self.pool).await {
+			Ok(_) => {},
+			Err(err) => {
+				self.debug(&err.to_string())?;
+			},
+		};
 		Ok(())
 	}
 
-	async fn enable(&self, user: UserId, channel: &str) -> Result<()> {
-		match sqlx::query("update rsstg_source set enabled = true from rsstg_channel where rsstg_channel.channel_id = rsstg_source.channel_id and rsstg_channel.username = $1 and owner = $2")
-			.bind(channel)
-			.bind(i64::from(user))
+	async fn enable(&self, source_id: &i32) -> Result<()> {
+		match sqlx::query("update rsstg_source set enabled = true where source_id = $1")
+			.bind(source_id)
 			.execute(&self.pool).await {
 			Ok(_) => {},
 			Err(err) => {
@@ -179,10 +160,9 @@ impl Core {
 		Ok(())
 	}
 
-	async fn disable(&self, user: UserId, channel: &str) -> Result<()> {
-		match sqlx::query("update rsstg_source set enabled = false from rsstg_channel where rsstg_channel.channel_id = rsstg_source.channel_id and rsstg_channel.username = $1 and owner = $2")
-			.bind(channel)
-			.bind(i64::from(user))
+	async fn disable(&self, source_id: &i32) -> Result<()> {
+		match sqlx::query("update rsstg_source set enabled = false where source_id = $1")
+			.bind(source_id)
 			.execute(&self.pool).await {
 			Ok(_) => {},
 			Err(err) => {
@@ -197,7 +177,8 @@ impl Core {
 		let mut next_fetch: DateTime<chrono::Local>;
 		let mut now;
 		loop {
-			let mut rows = sqlx::query("select source_id, username, next_fetch from rsstg_order natural left join rsstg_source natural left join rsstg_channel;")
+			self.debug("cycle")?;
+			let mut rows = sqlx::query("select source_id, next_fetch from rsstg_order natural left join rsstg_source natural left join rsstg_channel;")
 				.fetch(&self.pool);
 			while let Some(row) = rows.try_next().await.unwrap() {
 				now = chrono::Local::now();
@@ -213,14 +194,11 @@ impl Core {
 						},
 					};
 					let clone = self.clone();
-					let username: String = row.try_get("username")?;
-					let username = username.clone();
 					tokio::spawn(async move {
-						if let Err(err) = clone.check(&username, Some(true)).await {
+						if let Err(err) = clone.check(&source_id.clone(), Some(true)).await {
 							eprintln!("connection error: {}", err);
 						}
 					});
-					//&self.check(row.try_get("username")?, Some(true)).await?;
 				} else {
 					if next_fetch - now < delay {
 						delay = next_fetch - now;
@@ -228,6 +206,7 @@ impl Core {
 				}
 			};
 			tokio::time::delay_for(delay.to_std()?).await;
+			delay = chrono::Duration::minutes(5);
 		}
 		//Ok(())
 	}
@@ -261,22 +240,23 @@ async fn main() -> Result<()> {
 // start
 
 							"/start" => {
-								reply.push("Not in service yet. Try later.".to_string());
+								reply.push("Not in service yet\\. Try later\\.".to_string());
 							},
 
 // list
 
 							"/list" => {
 								reply.push("Channels:".to_string());
-								let mut rows = sqlx::query("select username, enabled, url, iv_hash from rsstg_source left join rsstg_channel using (channel_id) where owner = $1")
+								let mut rows = sqlx::query("select source_id, username, enabled, url, iv_hash from rsstg_source left join rsstg_channel using (channel_id) where owner = $1 order by source_id")
 									.bind(i64::from(message.from.id))
 									.fetch(&core.pool);
 								while let Some(row) = rows.try_next().await? {
+									let source_id: i32 = row.try_get("source_id")?;
 									let username: &str = row.try_get("username")?;
 									let enabled: bool = row.try_get("enabled")?;
 									let url: &str = row.try_get("url")?;
 									let iv_hash: Option<&str> = row.try_get("iv_hash")?;
-									reply.push(format!("\n\\*️⃣ `{}` {}\n🔗 `{}`", username,  
+									reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", source_id, username,  
 										match enabled {
 											true  => "🔄 enabled",
 											false => "⛔ disabled",
@@ -289,7 +269,11 @@ async fn main() -> Result<()> {
 
 // add
 
-							"/add" => {
+							"/add" | "/update" => {
+								let mut source_id: i32 = 0;
+								if cmd == "/update" {
+									source_id = words.next().unwrap().parse::<i32>()?;
+								}
 								let (channel, url, iv_hash) = (words.next().unwrap(), words.next().unwrap(), words.next());
 								let ok_link = re_link.is_match(&url);
 								let ok_hash = match iv_hash {
@@ -319,35 +303,36 @@ async fn main() -> Result<()> {
 												None
 											},
 									};
-									match chan {
-										Some(chan) => {
-											match sqlx::query("insert into rsstg_source (channel_id, url, iv_hash, owner) values ($1, $2, $3, $4) on conflict (channel_id, owner) do update set url = excluded.url, iv_hash = excluded.iv_hash;")
-												.bind(chan)
-												.bind(url)
-												.bind(iv_hash)
-												.bind(i64::from(message.from.id))
-												.execute(&core.pool).await {
-												Ok(_) => reply.push("Channel added\\.".to_string()),
-												Err(sqlx::Error::Database(err)) => {
-													match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
-														Some("_bt_check_unique", ) => {
-															reply.push("Duplicate key\\.".to_string());
-														},
-														Some(_) => {
-															reply.push("Database error\\.".to_string());
-														},
-														None => {
-															reply.push("No database error extracted\\.".to_string());
-														},
-													};
-												},
-												Err(err) => {
-													reply.push("Sorry, unknown error\\.".to_string());
-													core.debug(&format!("Sorry, unknown error: {:#?}\n", err))?;
-												},
-											};
-										},
-										None => {},
+									if let Some(chan) = chan {
+										match if cmd == "/update" {
+												sqlx::query("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $4 where source_id = $1").bind(source_id)
+											} else {
+												sqlx::query("insert into rsstg_source (channel_id, url, iv_hash, owner) values ($1, $2, $3, $4)")
+											}
+											.bind(chan)
+											.bind(url)
+											.bind(iv_hash)
+											.bind(i64::from(message.from.id))
+											.execute(&core.pool).await {
+											Ok(_) => reply.push("Channel added\\.".to_string()),
+											Err(sqlx::Error::Database(err)) => {
+												match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
+													Some("_bt_check_unique", ) => {
+														reply.push("Duplicate key\\.".to_string());
+													},
+													Some(_) => {
+														reply.push("Database error\\.".to_string());
+													},
+													None => {
+														reply.push("No database error extracted\\.".to_string());
+													},
+												};
+											},
+											Err(err) => {
+												reply.push("Sorry, unknown error\\.".to_string());
+												core.debug(&format!("Sorry, unknown error: {:#?}\n", err))?;
+											},
+										};
 									};
 								};
 							},
@@ -414,12 +399,7 @@ async fn main() -> Result<()> {
 // check
 
 							"/check" => {
-								let channel = words.next().unwrap();
-								if ! re_username.is_match(&channel) {
-									reply.push("Usernames should be something like \"@\\[a-z]\\[a-z0-9_]+\", aren't they?".to_string());
-								} else {
-									&core.check(channel, None).await?;
-								}
+								&core.check(&words.next().unwrap().parse::<i32>()?, None).await?;
 							},
 
 // clear
@@ -436,37 +416,27 @@ async fn main() -> Result<()> {
 // enable
 
 							"/enable" => {
-								let channel = words.next().unwrap();
-								if ! re_username.is_match(&channel) {
-									reply.push("Usernames should be something like \"@\\[a-z]\\[a-z0-9_]+\", aren't they?".to_string());
-								} else {
-									match core.enable(message.from.id, channel).await {
-										Ok(_) => {
-											reply.push("Channel enabled\\.".to_string());
-										}
-										Err(err) => {
-											core.debug(&err.to_string())?;
-										},
+								match core.enable(&words.next().unwrap().parse::<i32>()?).await {
+									Ok(_) => {
+										reply.push("Channel enabled\\.".to_string());
 									}
-								}
+									Err(err) => {
+										core.debug(&err.to_string())?;
+									},
+								};
 							},
 
 // disable
 
 							"/disable" => {
-								let channel = words.next().unwrap();
-								if ! re_username.is_match(&channel) {
-									reply.push("Usernames should be something like \"@\\[a-z]\\[a-z0-9_]+\", aren't they?".to_string());
-								} else {
-									match core.disable(message.from.id, channel).await {
-										Ok(_) => {
-											reply.push("Channel disabled\\.".to_string());
-										}
-										Err(err) => {
-											core.debug(&err.to_string())?;
-										},
+								match core.disable(&words.next().unwrap().parse::<i32>()?).await {
+									Ok(_) => {
+										reply.push("Channel disabled\\.".to_string());
 									}
-								}
+									Err(err) => {
+										core.debug(&err.to_string())?;
+									},
+								};
 							},
 
 							_ => {

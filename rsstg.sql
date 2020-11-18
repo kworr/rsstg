@@ -5,16 +5,15 @@ create unique index rsstg_updates__id on rsstg_updates(update->>'update_id');
 -- create table rsstg_users (id integer);
 create table rsstg_channel (
 	channel_id bigint primary key,
-	username text);
+	username text not null);
 create unique index rsstg_channel__username on rsstg_channel(username);
 
 create table rsstg_source (
 	source_id serial,
 	channel_id integer not null,
 	url text not null,
-	last_fetch timestamptz,
-	last_scrape timestamptz default now(),
-	enabled boolean default false,
+	last_scrape not null timestamptz default now(),
+	enabled boolean not null default false,
 	iv_hash text,
 	owner bigint not null);
 create unique index rsstg_source__source_id on rsstg_source(source_id);
@@ -25,7 +24,7 @@ create table rsstg_post (
 	source_id integer not null,
 	date int not null,
 	url text not null,
-	hour smallint generated always as (extract('hour' from  posted)) stored,
+	hour smallint not null generated always as (extract('hour' from  posted)) stored,
 	FOREIGN KEY (source_id) REFERENCES rsstg_source(source_id)
 );
 create unique index rsstg_post__url on rsstg_post(url);
