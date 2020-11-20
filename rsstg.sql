@@ -36,7 +36,7 @@ create or replace view rsstg_order as
 		from rsstg_source natural left join
 		(select source_id, count(*) as activity
 			from rsstg_post where 
-				hour = extract('hour' from now())
+				hour = extract('hour' from now())::smallint
 				and posted > now() - interval '7 days'
 			group by source_id) as act
 		where enabled
