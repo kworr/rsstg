@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
 		// start
 
 									"/start" => {
-										reply.push("Not in service yet\\. Try later\\.".to_string());
+										reply.push("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.".to_string());
 									},
 
 		// list
@@ -408,7 +408,7 @@ async fn main() -> Result<()> {
 										&core.check(&words.next().unwrap().parse::<i32>()?, None).await?;
 									},
 
-		// clear
+		// clean
 
 									"/clean" => {
 										if core.owner != i64::from(message.from.id) {
