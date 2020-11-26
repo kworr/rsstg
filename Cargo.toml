@@ -1,25 +1,23 @@
 [package]
 name = "rsstg"
-version = "0.1.6"
+version = "0.1.7"
 authors = ["arcade"]
 edition = "2018"
 
 [dependencies]
+chrono = "*"
 config = "*"
-
 futures = "*"
+futures-util = "*"
+regex = "*"
+rss = { version = "*", features = [ "from_url" ] }
+sqlx = { version = "*", features = [ "postgres", "tls", "runtime-async-std-native-tls", "chrono" ] }
 telegram-bot = "*"
 tokio = { version = "0.2", features = ["macros" ] }
 
-futures-util = "*"
+lazy_static = "*"
 
-sqlx = { version = "*", features = [ "postgres", "tls", "runtime-async-std-native-tls", "chrono" ] }
-
-regex = "*"
-
-rss = { version = "*", features = [ "from_url" ] }
-
-chrono = "*"
+anyhow = "*"
 
 [profile.release]
 lto = true
