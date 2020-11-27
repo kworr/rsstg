@@ -69,11 +69,14 @@ impl Core {
 		Ok(())
 	}
 
-	async fn check(&self, id: &i32, real: bool) -> Result<()> {
+	async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<()>
+	where S: Into<i64> {
+		let owner: i64 = owner.into();
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("🛑 Query queue fetch conn:\n{:?}", &self.pool))?;
-		let row = sqlx::query("select source_id, channel_id, url, iv_hash, owner from rsstg_source where source_id = $1")
+		let row = sqlx::query("select source_id, channel_id, url, iv_hash, owner from rsstg_source where source_id = $1 and owner = $2")
 			.bind(id)
+			.bind(owner)
 			.fetch_one(&mut conn).await
 			.with_context(|| format!("🛑 Query source:\n{:?}", &self.pool))?;
 		drop(conn);
@@ -134,22 +137,30 @@ impl Core {
 		Ok(())
 	}
 
-	async fn clean(&self, source_id: i32) -> Result<()> {
+	async fn clean<S>(&self, source_id: &i32, id: S) -> Result<String>
+	where S: Into<i64> {
+		let id: i64 = id.into();
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("🛑 Clean fetch conn:\n{:?}", &self.pool))?;
-		sqlx::query("delete from rsstg_post where source_id = $1;")
+		match sqlx::query("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;")
 			.bind(source_id)
+			.bind(id)
 			.execute(&mut conn).await
-			.with_context(|| format!("🛑 Clean seen posts:\n{:?}", &self.pool))?;
-		Ok(())
+			.with_context(|| format!("🛑 Clean seen posts:\n{:?}", &self.pool))?
+			.rows_affected() {
+			0 => { Ok("No data found found\\.".to_string()) },
+			x => { Ok(format!("{} posts purged\\.", x)) },
+		}
 	}
 
-	async fn enable(&self, source_id: &i32, id: telegram_bot::UserId) -> Result<&str> {
+	async fn enable<S>(&self, source_id: &i32, id: S) -> Result<&str>
+	where S: Into<i64> {
+		let id: i64 = id.into();
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("🛑 Enable fetch conn:\n{:?}", &self.pool))?;
 		match sqlx::query("update rsstg_source set enabled = true where source_id = $1 and owner = $2")
 			.bind(source_id)
-			.bind(i64::from(id))
+			.bind(id)
 			.execute(&mut conn).await
 			.with_context(|| format!("🛑 Enable source:\n\n{:?}", &self.pool))?
 			.rows_affected() {
@@ -159,12 +170,14 @@ impl Core {
 		}
 	}
 
-	async fn disable(&self, source_id: &i32, id: telegram_bot::UserId) -> Result<&str> {
+	async fn disable<S>(&self, source_id: &i32, id: S) -> Result<&str>
+	where S: Into<i64> {
+		let id: i64 = id.into();
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("🛑 Disable fetch conn:\n{:?}", &self.pool))?;
 		match sqlx::query("update rsstg_source set enabled = false where source_id = $1 and owner = $2")
 			.bind(source_id)
-			.bind(i64::from(id))
+			.bind(id)
 			.execute(&mut conn).await
 			.with_context(|| format!("🛑 Disable source:\n\n{:?}", &self.pool))?
 			.rows_affected() {
@@ -181,10 +194,11 @@ impl Core {
 			let mut conn = self.pool.acquire().await
 				.with_context(|| format!("🛑 Autofetch fetch conn:\n{:?}", &self.pool))?;
 			now = chrono::Local::now();
-			let mut queue = sqlx::query("select source_id, next_fetch from rsstg_order natural left join rsstg_source natural left join rsstg_channel where next_fetch < now();")
+			let mut queue = sqlx::query("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source natural left join rsstg_channel where next_fetch < now();")
 				.fetch_all(&mut conn).await?;
 			for row in queue.iter() {
 				let source_id: i32 = row.try_get("source_id")?;
+				let owner: i64 = row.try_get("owner")?;
 				let next_fetch: DateTime<chrono::Local> = row.try_get("next_fetch")?;
 				if next_fetch < now {
 					sqlx::query("update rsstg_source set last_scrape = now() + interval '1 hour' where source_id = $1;")
@@ -193,7 +207,7 @@ impl Core {
 						.with_context(|| format!("🛑 Lock source:\n\n{:?}", &self.pool))?;
 					let clone = self.clone();
 					tokio::spawn(async move {
-						if let Err(err) = clone.check(&source_id.clone(), true).await {
+						if let Err(err) = clone.check(&source_id, owner, true).await {
 							if let Err(err) = clone.debug(&err.to_string()) {
 								eprintln!("Check error: {}", err);
 							};
@@ -211,6 +225,32 @@ impl Core {
 		}
 	}
 
+	async fn list(&self, id: telegram_bot::UserId) -> Result<Vec<String>> {
+		let id = i64::from(id);
+		let mut reply = vec![];
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("🛑 List fetch conn:\n{:?}", &self.pool))?;
+		reply.push("Channels:".to_string());
+		let rows = sqlx::query("select source_id, username, enabled, url, iv_hash from rsstg_source left join rsstg_channel using (channel_id) where owner = $1 order by source_id")
+			.bind(id)
+			.fetch_all(&mut conn).await?;
+		for row in rows.iter() {
+			let source_id: i32 = row.try_get("source_id")?;
+			let username: &str = row.try_get("username")?;
+			let enabled: bool = row.try_get("enabled")?;
+			let url: &str = row.try_get("url")?;
+			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
+			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", source_id, username,  
+				match enabled {
+					true  => "🔄 enabled",
+					false => "⛔ disabled",
+				}, url));
+			if let Some(hash) = iv_hash {
+				reply.push(format!("IV `{}`", hash));
+			}
+		};
+		Ok(reply)
+	}
 }
 
 #[tokio::main]
@@ -256,33 +296,7 @@ async fn handle(update: telegram_bot::Update, core: &Core) -> Result<()> {
 // list
 
 						"/list" => {
-							match core.pool.acquire().await {
-								Err(err) => {
-									core.debug(&format!("🛑 Disable fetch conn:\n{}\n{:?}", &err, &core.pool))?;
-								},
-								Ok(mut conn) => {
-									reply.push("Channels:".to_string());
-									let rows = sqlx::query("select source_id, username, enabled, url, iv_hash from rsstg_source left join rsstg_channel using (channel_id) where owner = $1 order by source_id")
-										.bind(i64::from(message.from.id))
-										.fetch_all(&mut conn).await?;
-									for row in rows.iter() {
-									//while let Some(row) = rows.try_next().await? {
-										let source_id: i32 = row.try_get("source_id")?;
-										let username: &str = row.try_get("username")?;
-										let enabled: bool = row.try_get("enabled")?;
-										let url: &str = row.try_get("url")?;
-										let iv_hash: Option<&str> = row.try_get("iv_hash")?;
-										reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", source_id, username,  
-											match enabled {
-												true  => "🔄 enabled",
-												false => "⛔ disabled",
-											}, url));
-										if let Some(hash) = iv_hash {
-											reply.push(format!("IV `{}`", hash));
-										}
-									}
-								},
-							};
+							reply.append(&mut core.list(message.from.id).await?);
 						},
 
 // add
@@ -426,14 +440,8 @@ async fn handle(update: telegram_bot::Update, core: &Core) -> Result<()> {
 									reply.push(format!("I need a number\\.\n{}", &err));
 								},
 								Ok(number) => {
-									match &core.check(number, false).await {
-										Ok(_) => {
-											reply.push("Channel enabled\\.".to_string());
-										}
-										Err(err) => {
-											core.debug(&format!("🛑 Channel check failed:\n{}", &err))?;
-										},
-									};
+									core.check(&number, message.from.id, false).await
+										.context("🛑 Channel check failed.")?;
 								},
 							};
 						},
@@ -441,12 +449,15 @@ async fn handle(update: telegram_bot::Update, core: &Core) -> Result<()> {
 // clean
 
 						"/clean" => {
-							if core.owner != i64::from(message.from.id) {
-								reply.push("Reserved for testing\\.".to_string());
-							} else {
-								let source_id = words.next().unwrap().parse::<i32>().unwrap_or(0);
-								&core.clean(source_id).await?;
-							}
+							match &words.next().unwrap().parse::<i32>() {
+								Err(err) => {
+									reply.push(format!("I need a number\\.\n{}", &err));
+								},
+								Ok(number) => {
+									let result = core.clean(&number, message.from.id).await?;
+									reply.push(result.to_string());
+								},
+							};
 						},
 
 // enable
