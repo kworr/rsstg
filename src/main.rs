@@ -52,7 +52,7 @@ impl Core {
 		let clone = core.clone();
 		tokio::spawn(async move {
 			if let Err(err) = &clone.autofetch().await {
-				if let Err(err) = clone.debug(&err.to_string()) {
+				if let Err(err) = clone.debug(&format!("{:?}", err)) {
 					eprintln!("Autofetch error: {}", err);
 				};
 			}
@@ -162,7 +162,7 @@ impl Core {
 			.bind(source_id)
 			.bind(id)
 			.execute(&mut conn).await
-			.with_context(|| format!("🛑 Enable source:\n\n{:?}", &self.pool))?
+			.with_context(|| format!("🛑 Enable source:\n{:?}", &self.pool))?
 			.rows_affected() {
 			1 => { Ok("Source disabled\\.") },
 			0 => { Ok("Source not found\\.") },
@@ -179,7 +179,7 @@ impl Core {
 			.bind(source_id)
 			.bind(id)
 			.execute(&mut conn).await
-			.with_context(|| format!("🛑 Disable source:\n\n{:?}", &self.pool))?
+			.with_context(|| format!("🛑 Disable source:\n{:?}", &self.pool))?
 			.rows_affected() {
 			1 => { Ok("Source disabled\\.") },
 			0 => { Ok("Source not found\\.") },
@@ -208,7 +208,7 @@ impl Core {
 					let clone = self.clone();
 					tokio::spawn(async move {
 						if let Err(err) = clone.check(&source_id, owner, true).await {
-							if let Err(err) = clone.debug(&err.to_string()) {
+							if let Err(err) = clone.debug(&format!("{:?}", err)) {
 								eprintln!("Check error: {}", err);
 							};
 						};
@@ -264,7 +264,7 @@ async fn main() -> Result<()> {
 
 	while let Some(update) = stream.next().await {
 		if let Err(err) = handle(update?, &core).await {
-			core.debug(&err.to_string())?;
+			core.debug(&format!("{:?}", err))?;
 		};
 	}
 
