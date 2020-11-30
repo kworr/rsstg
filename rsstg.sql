@@ -2,14 +2,9 @@ create table rsstg_updates (owner integer, update jsonb);
 
 create unique index rsstg_updates__id on rsstg_updates(update->>'update_id');
 
--- create table rsstg_users (id integer);
-create table rsstg_channel (
-	channel_id bigint primary key,
-	username text not null);
-create unique index rsstg_channel__username on rsstg_channel(username);
-
 create table rsstg_source (
 	source_id serial,
+	channel text not null,
 	channel_id integer not null,
 	url text not null,
 	last_scrape not null timestamptz default now(),
@@ -25,7 +20,7 @@ create table rsstg_post (
 	date int not null,
 	url text not null,
 	hour smallint not null generated always as (extract('hour' from  posted)) stored,
-	FOREIGN KEY (source_id) REFERENCES rsstg_source(source_id)
+	FOREIGN KEY (source_id) REFERENCES rsstg_source(source_id) on delete cascade,
 );
 create unique index rsstg_post__url on rsstg_post(url);
 create index rsstg_post__hour on rsstg_post(hour);
