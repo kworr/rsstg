@@ -197,7 +197,7 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Enable source:\n{:?}", &self.pool))?
 			.rows_affected() {
-			1 => { Ok("Source disabled\\.") },
+			1 => { Ok("Source enabled\\.") },
 			0 => { Ok("Source not found\\.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
@@ -337,13 +337,20 @@ async fn main() -> Result<()> {
 
 	let mut stream = core.stream();
 
-	while let Some(update) = stream.next().await {
-		if let Err(err) = handle(update?, &core).await {
-			core.debug(&format!("🛑 {:?}", err))?;
+	loop {
+		match stream.next().await {
+			Some(update) => {
+				if let Err(err) = handle(update?, &core).await {
+					core.debug(&format!("🛑 {:?}", err))?;
+				};
+			},
+			None => {
+				core.debug(&format!("🛑 None error."))?;
+			}
 		};
 	}
 
-	Ok(())
+	//Ok(())
 }
 
 async fn handle(update: telegram_bot::Update, core: &Core) -> Result<()> {
