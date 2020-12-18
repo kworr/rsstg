@@ -55,7 +55,7 @@ impl Core {
 		let clone = core.clone();
 		tokio::spawn(async move {
 			if let Err(err) = &clone.autofetch().await {
-				if let Err(err) = clone.debug(&format!("🛑 {:?}", err)) {
+				if let Err(err) = clone.debug(&format!("🛑 {:?}", err), None) {
 					eprintln!("Autofetch error: {}", err);
 				};
 			}
@@ -67,8 +67,11 @@ impl Core {
 		self.tg.stream()
 	}
 
-	fn debug(&self, msg: &str) -> Result<()> {
-		self.tg.spawn(SendMessage::new(self.owner_chat, msg));
+	fn debug(&self, msg: &str, target: Option<UserId>) -> Result<()> {
+		self.tg.spawn(SendMessage::new(match target {
+			Some(user) => user,
+			None => self.owner_chat,
+		}, msg));
 		Ok(())
 	}
 
@@ -282,7 +285,7 @@ impl Core {
 					};
 					tokio::spawn(async move {
 						if let Err(err) = clone.check(source_id, owner, true).await {
-							if let Err(err) = clone.debug(&format!("🛑 {:?}", err)) {
+							if let Err(err) = clone.debug(&format!("🛑 {:?}", err), None) {
 								eprintln!("Check error: {}", err);
 							};
 						};
@@ -336,16 +339,18 @@ async fn main() -> Result<()> {
 	let core = Core::new(settings).await?;
 
 	let mut stream = core.stream();
+	let mut reply_to: Option<UserId>;
 
 	loop {
+		reply_to = None;
 		match stream.next().await {
 			Some(update) => {
-				if let Err(err) = handle(update?, &core).await {
-					core.debug(&format!("🛑 {:?}", err))?;
+				if let Err(err) = handle(update?, &core, &mut reply_to).await {
+					core.debug(&format!("🛑 {:?}", err), reply_to)?;
 				};
 			},
 			None => {
-				core.debug(&format!("🛑 None error."))?;
+				core.debug(&format!("🛑 None error."), None)?;
 			}
 		};
 	}
@@ -353,7 +358,7 @@ async fn main() -> Result<()> {
 	//Ok(())
 }
 
-async fn handle(update: telegram_bot::Update, core: &Core) -> Result<()> {
+async fn handle(update: telegram_bot::Update, core: &Core, mut _reply_to: &Option<UserId>) -> Result<()> {
 	lazy_static! {
 		static ref RE_USERNAME: Regex = Regex::new(r"^@[a-zA-Z][a-zA-Z0-9_]+$").unwrap();
 		static ref RE_LINK: Regex = Regex::new(r"^https?://[a-zA-Z.0-9-]+/[-_a-zA-Z.0-9/?=]+$").unwrap();
@@ -384,6 +389,7 @@ async fn handle(update: telegram_bot::Update, core: &Core) -> Result<()> {
 // add
 
 						"/add" | "/update" => {
+							_reply_to = &Some(message.from.id);
 							let mut source_id: Option<i32> = None;
 							let at_least = "Requires at least 3 parameters.";
 							if cmd == "/update" {
