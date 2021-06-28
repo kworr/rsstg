@@ -16,7 +16,7 @@ use tokio::stream::StreamExt;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-use sqlx::Done; // .rows_affected()
+//use sqlx::Done; // .rows_affected()
 
 #[macro_use]
 extern crate lazy_static;

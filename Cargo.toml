@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.1.15"
+version = "0.1.16"
 authors = ["arcade"]
 edition = "2018"
 
@@ -11,7 +11,7 @@ futures = "*"
 futures-util = "*"
 regex = "*"
 rss = { version = "*", features = [ "from_url" ] }
-sqlx = { version = "*", features = [ "postgres", "tls", "runtime-tokio-native-tls", "chrono" ] }
+sqlx = { version = "*", features = [ "postgres", "tls", "runtime-async-std-native-tls", "chrono" ] }
 telegram-bot = "*"
 tokio = { version = "0.2", features = ["macros" ] }
 
