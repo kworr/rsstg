@@ -264,13 +264,13 @@ impl Core {
 	}
 
 	async fn autofetch(&self) -> Result<()> {
-		let mut delay = chrono::Duration::minutes(5);
+		let mut delay = chrono::Duration::minutes(1);
 		let mut now;
 		loop {
 			let mut conn = self.pool.acquire().await
 				.with_context(|| format!("Autofetch fetch conn:\n{:?}", &self.pool))?;
 			now = chrono::Local::now();
-			let mut queue = sqlx::query("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '5 minutes';")
+			let mut queue = sqlx::query("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
 				.fetch_all(&mut conn).await?;
 			for row in queue.iter() {
 				let source_id: i32 = row.try_get("source_id")?;
@@ -298,7 +298,7 @@ impl Core {
 			};
 			queue.clear();
 			tokio::time::delay_for(delay.to_std()?).await;
-			delay = chrono::Duration::minutes(5);
+			delay = chrono::Duration::minutes(1);
 		}
 	}
 
@@ -339,6 +339,7 @@ async fn main() -> Result<()> {
 	let core = Core::new(settings).await?;
 
 	let mut stream = core.stream();
+	stream.allowed_updates(&[AllowedUpdate::Message]);
 	let mut reply_to: Option<UserId>;
 
 	loop {
