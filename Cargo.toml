@@ -1,10 +1,11 @@
 [package]
 name = "rsstg"
-version = "0.1.17"
+version = "0.1.18"
 authors = ["arcade"]
 edition = "2018"
 
 [dependencies]
+atom_syndication = "*"
 chrono = "*"
 config = "*"
 futures = "*"
