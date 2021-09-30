@@ -1,20 +1,24 @@
 [package]
 name = "rsstg"
-version = "0.1.18"
+version = "0.1.19"
 authors = ["arcade"]
 edition = "2018"
 
 [dependencies]
-atom_syndication = "*"
+atom_syndication = { version = "*", features = [ "with-serde" ] }
 chrono = "*"
 config = "*"
 futures = "*"
 futures-util = "*"
 regex = "*"
+#reqwest = { version = "*", features = [ "brotli", "gzip", "deflate" ]}
+reqwest = "~0.10"
 rss = { version = "*", features = [ "from_url" ] }
 sqlx = { version = "*", features = [ "postgres", "tls", "runtime-async-std-native-tls", "chrono" ] }
+#surf = "*"
 telegram-bot = "*"
-tokio = { version = "0.2", features = ["macros" ] }
+tokio = { version = "~0.2", features = [ "macros" ] } #, "rt-multi-thread", "time" ] }
+#tokio-stream = "*"
 
 lazy_static = "*"
 

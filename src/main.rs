@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex};
 use config;
 
 use tokio;
+use reqwest;
 
 use rss;
+use atom_syndication;
 
 use chrono::DateTime;
 
@@ -16,7 +18,6 @@ use tokio::stream::StreamExt;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
-//use sqlx::Done; // .rows_affected()
 
 #[macro_use]
 extern crate lazy_static;
@@ -108,7 +109,12 @@ impl Core {
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
 			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
-			let feed = rss::Channel::from_url(url)
+			let content = reqwest::get(url).await?.bytes().await?;
+			//let mut content_ = surf::get(url).await.map_err(|err| anyhow!(err))?;
+			//eprintln!("Data: {:#?}", &content_);
+			//let content = content_.body_bytes().await.map_err(|err| anyhow!(err))?;
+			/*
+			let feed = rss::Channel::read_from(&content[..])
 				.with_context(|| format!("Problem opening feed url:\n{}", &url))?;
 			for item in feed.items() {
 				let date = match item.pub_date() {
@@ -117,6 +123,32 @@ impl Core {
 				}?;
 				let url = item.link().unwrap().to_string();
 				posts.insert(date.clone(), url.clone());
+			};
+			*/
+			match rss::Channel::read_from(&content[..]) {
+				Ok(feed) => {
+					for item in feed.items() {
+						let date = match item.pub_date() {
+							Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
+							None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
+						}?;
+						let url = item.link().unwrap().to_string();
+						posts.insert(date.clone(), url.clone());
+					};
+				},
+				Err(err) => match err {
+					rss::Error::InvalidStartTag => {
+						let feed = atom_syndication::Feed::read_from(&content[..])
+							.with_context(|| format!("Problem opening feed url:\n{}", &url))?;
+						for item in feed.entries() {
+							let date = item.published().unwrap();
+							let url = item.links()[0].href();
+							posts.insert(date.clone(), url.to_string());
+						};
+					},
+					rss::Error::Eof => (),
+					_ => bail!("Unsupported or mangled content:\n{:#?}\n", err)
+				}
 			};
 			for (date, url) in posts.iter() {
 				let mut conn = self.pool.acquire().await
