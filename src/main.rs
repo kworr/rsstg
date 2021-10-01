@@ -275,7 +275,10 @@ impl Core {
 			.bind(owner)
 			.bind(channel)
 			.execute(&mut conn).await {
-			Ok(_) => return Ok(String::from("Channel added\\.")),
+			Ok(_) => return Ok(String::from(match update {
+				Some(_) => "Channel updated\\.",
+				None => "Channel added\\.",
+			})),
 			Err(sqlx::Error::Database(err)) => {
 				match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
 					Some("_bt_check_unique", ) => {
