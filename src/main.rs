@@ -1,23 +1,20 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use chrono::DateTime;
 use config;
-
-use tokio;
+use futures::StreamExt;
+use regex::Regex;
 use reqwest;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::Row;
+use tokio;
 
 use rss;
 use atom_syndication;
 
-use chrono::DateTime;
-
-use regex::Regex;
-
 use telegram_bot::*;
-use tokio::stream::StreamExt;
-
-use sqlx::postgres::PgPoolOptions;
-use sqlx::Row;
+//use tokio::stream::StreamExt;
 
 #[macro_use]
 extern crate lazy_static;
@@ -175,7 +172,7 @@ impl Core {
 						.execute(&mut conn).await
 						.with_context(|| format!("Record post:\n{:?}", &conn))?;
 					drop(conn);
-					tokio::time::delay_for(std::time::Duration::new(4, 0)).await;
+					tokio::time::sleep(std::time::Duration::new(4, 0)).await;
 				};
 			};
 			posts.clear();
@@ -332,7 +329,7 @@ impl Core {
 				}
 			};
 			queue.clear();
-			tokio::time::delay_for(delay.to_std()?).await;
+			tokio::time::sleep(delay.to_std()?).await;
 			delay = chrono::Duration::minutes(1);
 		}
 	}

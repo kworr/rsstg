@@ -5,24 +5,21 @@ authors = ["arcade"]
 edition = "2018"
 
 [dependencies]
+anyhow = "*"
 atom_syndication = { version = "*", features = [ "with-serde" ] }
 chrono = "*"
 config = "*"
 futures = "*"
 futures-util = "*"
-regex = "*"
-#reqwest = { version = "*", features = [ "brotli", "gzip", "deflate" ]}
-reqwest = "~0.10"
-rss = { version = "*", features = [ "from_url" ] }
-sqlx = { version = "*", features = [ "postgres", "tls", "runtime-async-std-native-tls", "chrono" ] }
-#surf = "*"
-telegram-bot = "*"
-tokio = { version = "~0.2", features = [ "macros" ] } #, "rt-multi-thread", "time" ] }
-#tokio-stream = "*"
-
 lazy_static = "*"
-
-anyhow = "*"
+regex = "*"
+reqwest = { version = "*", features = [ "brotli", "gzip", "deflate" ]}
+#reqwest = "~0.10"
+rss = { version = "*", features = [ "from_url" ] }
+sqlx = { version = "*", features = [ "postgres", "tls", "runtime-tokio-native-tls", "chrono" ] }
+#telegram-bot = "*"
+telegram-bot = { git = "https://github.com/telegram-rs/telegram-bot" }
+tokio = { version = "1.2", features = [ "macros", "net", "rt-multi-thread", "time" ] }
 
 [profile.release]
 lto = true
