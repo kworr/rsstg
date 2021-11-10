@@ -125,12 +125,17 @@ impl Core {
 			match rss::Channel::read_from(&content[..]) {
 				Ok(feed) => {
 					for item in feed.items() {
-						let date = match item.pub_date() {
-							Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
-							None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
-						}?;
-						let url = item.link().unwrap().to_string();
-						posts.insert(date.clone(), url.clone());
+						match item.link() {
+							Some(link) => {
+								let date = match item.pub_date() {
+									Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
+									None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
+								}?;
+								let url = link.to_string();
+								posts.insert(date.clone(), url.clone());
+							},
+							None => {}
+						}
 					};
 				},
 				Err(err) => match err {
