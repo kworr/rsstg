@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.1.19"
+version = "0.2.0"
 authors = ["arcade"]
 edition = "2018"
 
@@ -14,8 +14,8 @@ futures-util = "*"
 lazy_static = "*"
 regex = "*"
 reqwest = { version = "*", features = [ "brotli", "gzip", "deflate" ]}
-#reqwest = "~0.10"
 rss = { version = "*", features = [ "from_url" ] }
+sedregex = "*"
 sqlx = { version = "*", features = [ "postgres", "tls", "runtime-tokio-native-tls", "chrono" ] }
 #telegram-bot = "*"
 telegram-bot = { git = "https://github.com/telegram-rs/telegram-bot" }

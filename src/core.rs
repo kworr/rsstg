@@ -1,0 +1,369 @@
+use anyhow::{anyhow, bail, Context, Result};
+use atom_syndication;
+use chrono::DateTime;
+use config;
+use regex::Regex;
+use reqwest;
+use sqlx::{
+	postgres::PgPoolOptions,
+	Row,
+};
+use rss;
+use std::{
+	collections::{
+		BTreeMap,
+		HashSet,
+	},
+	sync::{Arc, Mutex},
+};
+use telegram_bot;
+
+#[derive(Clone)]
+pub struct Core {
+	owner: i64,
+	api_key: String,
+	owner_chat: telegram_bot::UserId,
+	pub tg: telegram_bot::Api,
+	pub my: telegram_bot::User,
+	pool: sqlx::Pool<sqlx::Postgres>,
+	sources: Arc<Mutex<HashSet<Arc<i32>>>>,
+}
+
+impl Core {
+	pub async fn new(settings: config::Config) -> Result<Core> {
+		let owner = settings.get_int("owner")?;
+		let api_key = settings.get_str("api_key")?;
+		let tg = telegram_bot::Api::new(&api_key);
+		let core = Core {
+			owner: owner,
+			api_key: api_key.clone(),
+			my: tg.send(telegram_bot::GetMe).await?,
+			tg: tg,
+			owner_chat: telegram_bot::UserId::new(owner),
+			pool: PgPoolOptions::new()
+				.max_connections(5)
+				.connect_timeout(std::time::Duration::new(300, 0))
+				.idle_timeout(std::time::Duration::new(60, 0))
+				.connect_lazy(&settings.get_str("pg")?)?,
+			sources: Arc::new(Mutex::new(HashSet::new())),
+		};
+		let clone = core.clone();
+		tokio::spawn(async move {
+			if let Err(err) = &clone.autofetch().await {
+				if let Err(err) = clone.send(&format!("🛑 {:?}", err), None) {
+					eprintln!("Autofetch error: {}", err);
+				};
+			}
+		});
+		Ok(core)
+	}
+
+	pub fn stream(&self) -> telegram_bot::UpdatesStream {
+		self.tg.stream()
+	}
+
+	pub fn send<S>(&self, msg: S, target: Option<telegram_bot::UserId>) -> Result<()>
+	where S: Into<String> {
+		let msg: String = msg.into();
+		self.tg.spawn(telegram_bot::SendMessage::new(match target {
+			Some(user) => user,
+			None => self.owner_chat,
+		}, msg.to_owned()));
+		Ok(())
+	}
+
+	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<String>
+	where S: Into<i64> {
+		let mut posted: i32 = 0;
+		let owner: i64 = owner.into();
+		let id = {
+			let mut set = self.sources.lock().unwrap();
+			match set.get(id) {
+				Some(id) => id.clone(),
+				None => {
+					let id = Arc::new(*id);
+					set.insert(id.clone());
+					id.clone()
+				},
+			}
+		};
+		let count = Arc::strong_count(&id);
+		if count == 2 {
+			let mut conn = self.pool.acquire().await
+				.with_context(|| format!("Query queue fetch conn:\n{:?}", &self.pool))?;
+			let row = sqlx::query("select source_id, channel_id, url, iv_hash, owner, url_re from rsstg_source where source_id = $1 and owner = $2")
+				.bind(*id)
+				.bind(owner)
+				.fetch_one(&mut conn).await
+				.with_context(|| format!("Query source:\n{:?}", &self.pool))?;
+			drop(conn);
+			let channel_id: i64 = row.try_get("channel_id")?;
+			let url: &str = row.try_get("url")?;
+			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
+			let url_re: Option<regex::Regex> = match row.try_get("url_re")? {
+				Some(x) => Some(Regex::new(x)?),
+				None => None,
+			};
+			let destination = match real {
+				true => telegram_bot::UserId::new(channel_id),
+				false => telegram_bot::UserId::new(row.try_get("owner")?),
+			};
+			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
+			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
+			let content = reqwest::get(url).await?.bytes().await?;
+			match rss::Channel::read_from(&content[..]) {
+				Ok(feed) => {
+					for item in feed.items() {
+						match item.link() {
+							Some(link) => {
+								let date = match item.pub_date() {
+									Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
+									None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
+								}?;
+								let url = link.to_string();
+								posts.insert(date.clone(), url.clone());
+							},
+							None => {}
+						}
+					};
+				},
+				Err(err) => match err {
+					rss::Error::InvalidStartTag => {
+						let feed = atom_syndication::Feed::read_from(&content[..])
+							.with_context(|| format!("Problem opening feed url:\n{}", &url))?;
+						for item in feed.entries() {
+							let date = item.published().unwrap();
+							let url = item.links()[0].href();
+							posts.insert(date.clone(), url.to_string());
+						};
+					},
+					rss::Error::Eof => (),
+					_ => bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n", &url, err)
+				}
+			};
+			for (date, url) in posts.iter() {
+				let mut conn = self.pool.acquire().await
+					.with_context(|| format!("Check post fetch conn:\n{:?}", &self.pool))?;
+				let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
+					.bind(&url)
+					.bind(*id)
+					.fetch_one(&mut conn).await
+					.with_context(|| format!("Check post:\n{:?}", &conn))?;
+				let exists: bool = row.try_get("exists")?;
+				if ! exists {
+					if this_fetch == None || *date > this_fetch.unwrap() {
+						this_fetch = Some(*date);
+					};
+					self.tg.send( match iv_hash {
+							Some(x) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", match &url_re {
+								Some(x) => match x.captures(&url) {
+									Some(x) => {
+										bail!("Regex hit, result:\n{:#?}", &x[0]);
+										&x[0]
+									},
+									None => &url,
+								},
+								None => &url,
+							}, x)),
+							None => telegram_bot::SendMessage::new(destination, format!("{}", url)),
+						}.parse_mode(telegram_bot::types::ParseMode::Html)).await
+						.context("Can't post message:")?;
+					sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
+						.bind(*id)
+						.bind(date)
+						.bind(url)
+						.execute(&mut conn).await
+						.with_context(|| format!("Record post:\n{:?}", &conn))?;
+					drop(conn);
+					tokio::time::sleep(std::time::Duration::new(4, 0)).await;
+				};
+				posted += 1;
+			};
+			posts.clear();
+		};
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Update scrape fetch conn:\n{:?}", &self.pool))?;
+		sqlx::query("update rsstg_source set last_scrape = now() where source_id = $1;")
+			.bind(*id)
+			.execute(&mut conn).await
+			.with_context(|| format!("Update scrape:\n{:?}", &conn))?;
+		Ok(format!("Posted: {}", &posted))
+	}
+
+	pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<String>
+	where S: Into<i64> {
+		let owner: i64 = owner.into();
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Delete fetch conn:\n{:?}", &self.pool))?;
+		match sqlx::query("delete from rsstg_source where source_id = $1 and owner = $2;")
+			.bind(source_id)
+			.bind(owner)
+			.execute(&mut conn).await
+			.with_context(|| format!("Delete source rule:\n{:?}", &self.pool))?
+			.rows_affected() {
+			0 => { Ok("No data found found\\.".to_string()) },
+			x => { Ok(format!("{} sources removed\\.", x)) },
+		}
+	}
+
+	pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<String>
+	where S: Into<i64> {
+		let owner: i64 = owner.into();
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Clean fetch conn:\n{:?}", &self.pool))?;
+		match sqlx::query("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;")
+			.bind(source_id)
+			.bind(owner)
+			.execute(&mut conn).await
+			.with_context(|| format!("Clean seen posts:\n{:?}", &self.pool))?
+			.rows_affected() {
+			0 => { Ok("No data found found\\.".to_string()) },
+			x => { Ok(format!("{} posts purged\\.", x)) },
+		}
+	}
+
+	pub async fn enable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
+	where S: Into<i64> {
+		let owner: i64 = owner.into();
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Enable fetch conn:\n{:?}", &self.pool))?;
+		match sqlx::query("update rsstg_source set enabled = true where source_id = $1 and owner = $2")
+			.bind(source_id)
+			.bind(owner)
+			.execute(&mut conn).await
+			.with_context(|| format!("Enable source:\n{:?}", &self.pool))?
+			.rows_affected() {
+			1 => { Ok("Source enabled\\.") },
+			0 => { Ok("Source not found\\.") },
+			_ => { Err(anyhow!("Database error.")) },
+		}
+	}
+
+	pub async fn disable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
+	where S: Into<i64> {
+		let owner: i64 = owner.into();
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Disable fetch conn:\n{:?}", &self.pool))?;
+		match sqlx::query("update rsstg_source set enabled = false where source_id = $1 and owner = $2")
+			.bind(source_id)
+			.bind(owner)
+			.execute(&mut conn).await
+			.with_context(|| format!("Disable source:\n{:?}", &self.pool))?
+			.rows_affected() {
+			1 => { Ok("Source disabled\\.") },
+			0 => { Ok("Source not found\\.") },
+			_ => { Err(anyhow!("Database error.")) },
+		}
+	}
+
+	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<String>
+	where S: Into<i64> {
+		let owner: i64 = owner.into();
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Update fetch conn:\n{:?}", &self.pool))?;
+
+		match match update {
+				Some(id) => {
+					sqlx::query("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $5, channel = $6 where source_id = $1").bind(id)
+				},
+				None => {
+					sqlx::query("insert into rsstg_source (channel_id, url, iv_hash, owner, channel, url_re) values ($1, $2, $3, $4, $5, $6)")
+				},
+			}
+			.bind(channel_id)
+			.bind(url)
+			.bind(iv_hash)
+			.bind(owner)
+			.bind(channel)
+			.bind(url_re)
+			.execute(&mut conn).await {
+			Ok(_) => return Ok(String::from(match update {
+				Some(_) => "Channel updated\\.",
+				None => "Channel added\\.",
+			})),
+			Err(sqlx::Error::Database(err)) => {
+				match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
+					Some("_bt_check_unique", ) => {
+						return Ok("Duplicate key\\.".to_string())
+					},
+					Some(_) => {
+						return Ok("Database error\\.".to_string())
+					},
+					None => {
+						return Ok("No database error extracted\\.".to_string())
+					},
+				};
+			},
+			Err(err) => {
+				bail!("Sorry, unknown error:\n{:#?}\n", err);
+			},
+		};
+	}
+
+	async fn autofetch(&self) -> Result<()> {
+		let mut delay = chrono::Duration::minutes(1);
+		let mut now;
+		loop {
+			let mut conn = self.pool.acquire().await
+				.with_context(|| format!("Autofetch fetch conn:\n{:?}", &self.pool))?;
+			now = chrono::Local::now();
+			let mut queue = sqlx::query("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
+				.fetch_all(&mut conn).await?;
+			for row in queue.iter() {
+				let source_id: i32 = row.try_get("source_id")?;
+				let owner: i64 = row.try_get("owner")?;
+				let next_fetch: DateTime<chrono::Local> = row.try_get("next_fetch")?;
+				if next_fetch < now {
+					//let clone = self.clone();
+					//clone.owner_chat(UserId::new(owner));
+					let clone = Core {
+						owner_chat: telegram_bot::UserId::new(owner),
+						..self.clone()
+					};
+					tokio::spawn(async move {
+						if let Err(err) = clone.check(&source_id, owner, true).await {
+							if let Err(err) = clone.send(&format!("🛑 {:?}", err), None) {
+								eprintln!("Check error: {}", err);
+							};
+						};
+					});
+				} else {
+					if next_fetch - now < delay {
+						delay = next_fetch - now;
+					}
+				}
+			};
+			queue.clear();
+			tokio::time::sleep(delay.to_std()?).await;
+			delay = chrono::Duration::minutes(1);
+		}
+	}
+
+	pub async fn list<S>(&self, owner: S) -> Result<Vec<String>>
+	where S: Into<i64> {
+		let owner = owner.into();
+		let mut reply = vec![];
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("List fetch conn:\n{:?}", &self.pool))?;
+		reply.push("Channels:".to_string());
+		let rows = sqlx::query("select source_id, channel, enabled, url, iv_hash from rsstg_source where owner = $1 order by source_id")
+			.bind(owner)
+			.fetch_all(&mut conn).await?;
+		for row in rows.iter() {
+			let source_id: i32 = row.try_get("source_id")?;
+			let username: &str = row.try_get("channel")?;
+			let enabled: bool = row.try_get("enabled")?;
+			let url: &str = row.try_get("url")?;
+			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
+			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", source_id, username,  
+				match enabled {
+					true  => "🔄 enabled",
+					false => "⛔ disabled",
+				}, url));
+			if let Some(hash) = iv_hash {
+				reply.push(format!("IV `{}`", hash));
+			}
+		};
+		Ok(reply)
+	}
+}
