@@ -69,11 +69,15 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 				bail!("IV hash should be 14 hex digits.\nNot {:?}", hash);
 			};
 			Some(*hash)
-		}
+		},
 		None => None,
 	};
-	if let Some(rex) = url_re {
-		let _url_rex = ReplaceCommand::new(rex).context("Regexp parsing error:")?;
+	let url_re = match url_re {
+		Some(re) => {
+			let _url_rex = ReplaceCommand::new(re).context("Regexp parsing error:")?;
+			Some(*re)
+		},
+		None => None,
 	};
 	let channel_id = i64::from(core.tg.send(telegram_bot::GetChat::new(telegram_bot::types::ChatRef::ChannelUsername(channel.to_string()))).await?.id());
 	let chan_adm = core.tg.send(telegram_bot::GetChatAdministrators::new(telegram_bot::types::ChatRef::ChannelUsername(channel.to_string()))).await
@@ -89,6 +93,6 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 	};
 	if ! me   { bail!("I need to be admin on that channel."); };
 	if ! user { bail!("You should be admin on that channel."); };
-	core.send(core.update(source_id, channel, channel_id, url, iv_hash, None, sender).await?, Some(sender), None)?;
+	core.send(core.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(sender), None)?;
 	Ok(())
 }

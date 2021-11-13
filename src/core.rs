@@ -2,7 +2,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use atom_syndication;
 use chrono::DateTime;
 use config;
-use regex::Regex;
 use reqwest;
 use sqlx::{
 	postgres::PgPoolOptions,
@@ -103,9 +102,14 @@ impl Core {
 			drop(conn);
 			let channel_id: i64 = row.try_get("channel_id")?;
 			let url: &str = row.try_get("url")?;
+			/*let url: Cow<'a, str> = match row.try_get("url") {
+				Ok(x) => String::from(x).to_owned().into(),
+				Err(err) => bail!("Test"),
+			};*/
 			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
-			let url_re: Option<regex::Regex> = match row.try_get("url_re")? {
-				Some(x) => Some(Regex::new(x)?),
+			//let url_re: Option<sedregex::ReplaceCommand> = match row.try_get("url_re")? {
+			let url_re = match row.try_get("url_re")? {
+				Some(x) => Some(sedregex::ReplaceCommand::new(x)?),
 				None => None,
 			};
 			let destination = match real {
@@ -124,8 +128,8 @@ impl Core {
 									Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
 									None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
 								}?;
-								let url = link.to_string();
-								posts.insert(date.clone(), url.clone());
+								let url = link;
+								posts.insert(date.clone(), url.into());
 							},
 							None => {}
 						}
@@ -138,7 +142,7 @@ impl Core {
 						for item in feed.entries() {
 							let date = item.published().unwrap();
 							let url = item.links()[0].href();
-							posts.insert(date.clone(), url.to_string());
+							posts.insert(date.clone(), url.into());
 						};
 					},
 					rss::Error::Eof => (),
@@ -149,7 +153,7 @@ impl Core {
 				let mut conn = self.pool.acquire().await
 					.with_context(|| format!("Check post fetch conn:\n{:?}", &self.pool))?;
 				let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
-					.bind(&url)
+					.bind(url)
 					.bind(*id)
 					.fetch_one(&mut conn).await
 					.with_context(|| format!("Check post:\n{:?}", &conn))?;
@@ -159,16 +163,13 @@ impl Core {
 						this_fetch = Some(*date);
 					};
 					self.tg.send( match iv_hash {
-							Some(x) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", match &url_re {
-								Some(x) => match x.captures(&url) {
-									Some(x) => {
-										bail!("Regex hit, result:\n{:#?}", &x[0]);
-										&x[0]
-									},
-									None => &url,
+							Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", match url_re {
+								Some(x) => {
+									bail!("Regex hit, result:\n{:#?}", x.execute(url));
+									url
 								},
-								None => &url,
-							}, x)),
+								None => url,
+							}, hash)),
 							None => telegram_bot::SendMessage::new(destination, format!("{}", url)),
 						}.parse_mode(telegram_bot::types::ParseMode::Html)).await
 						.context("Can't post message:")?;
@@ -205,8 +206,8 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Delete source rule:\n{:?}", &self.pool))?
 			.rows_affected() {
-			0 => { Ok("No data found found\\.".to_string()) },
-			x => { Ok(format!("{} sources removed\\.", x)) },
+			0 => { Ok("No data found found.".to_string()) },
+			x => { Ok(format!("{} sources removed.", x)) },
 		}
 	}
 
@@ -221,8 +222,8 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Clean seen posts:\n{:?}", &self.pool))?
 			.rows_affected() {
-			0 => { Ok("No data found found\\.".to_string()) },
-			x => { Ok(format!("{} posts purged\\.", x)) },
+			0 => { Ok("No data found found.".to_string()) },
+			x => { Ok(format!("{} posts purged.", x)) },
 		}
 	}
 
@@ -237,8 +238,8 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Enable source:\n{:?}", &self.pool))?
 			.rows_affected() {
-			1 => { Ok("Source enabled\\.") },
-			0 => { Ok("Source not found\\.") },
+			1 => { Ok("Source enabled.") },
+			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
 	}
@@ -254,8 +255,8 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Disable source:\n{:?}", &self.pool))?
 			.rows_affected() {
-			1 => { Ok("Source disabled\\.") },
-			0 => { Ok("Source not found\\.") },
+			1 => { Ok("Source disabled.") },
+			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
 	}
@@ -268,7 +269,7 @@ impl Core {
 
 		match match update {
 				Some(id) => {
-					sqlx::query("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $5, channel = $6 where source_id = $1").bind(id)
+					sqlx::query("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $5, channel = $6, url_re = $7 where source_id = $1").bind(id)
 				},
 				None => {
 					sqlx::query("insert into rsstg_source (channel_id, url, iv_hash, owner, channel, url_re) values ($1, $2, $3, $4, $5, $6)")
@@ -282,19 +283,19 @@ impl Core {
 			.bind(url_re)
 			.execute(&mut conn).await {
 			Ok(_) => return Ok(String::from(match update {
-				Some(_) => "Channel updated\\.",
-				None => "Channel added\\.",
+				Some(_) => "Channel updated.",
+				None => "Channel added.",
 			})),
 			Err(sqlx::Error::Database(err)) => {
 				match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
 					Some("_bt_check_unique", ) => {
-						return Ok("Duplicate key\\.".to_string())
+						return Ok("Duplicate key.".to_string())
 					},
 					Some(_) => {
-						return Ok("Database error\\.".to_string())
+						return Ok("Database error.".to_string())
 					},
 					None => {
-						return Ok("No database error extracted\\.".to_string())
+						return Ok("No database error extracted.".to_string())
 					},
 				};
 			},
