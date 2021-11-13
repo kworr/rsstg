@@ -9,6 +9,7 @@ use sqlx::{
 };
 use rss;
 use std::{
+	borrow::Cow,
 	collections::{
 		BTreeMap,
 		HashSet,
@@ -61,9 +62,10 @@ impl Core {
 		self.tg.stream()
 	}
 
-	pub fn send<S>(&self, msg: S, target: Option<telegram_bot::UserId>, parse_mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
-	where S: Into<String> {
-		let msg: String = msg.into();
+	pub fn send<'a, S>(&self, msg: S, target: Option<telegram_bot::UserId>, parse_mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
+	where S: Into<Cow<'a, str>> {
+		let msg = msg.into();
+
 		let parse_mode = match parse_mode {
 			Some(mode) => mode,
 			None => telegram_bot::types::ParseMode::Html,
@@ -71,14 +73,15 @@ impl Core {
 		self.tg.spawn(telegram_bot::SendMessage::new(match target {
 			Some(user) => user,
 			None => self.owner_chat,
-		}, msg.to_owned()).parse_mode(parse_mode));
+		}, msg).parse_mode(parse_mode));
 		Ok(())
 	}
 
 	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<String>
 	where S: Into<i64> {
+		let owner = owner.into();
+
 		let mut posted: i32 = 0;
-		let owner: i64 = owner.into();
 		let id = {
 			let mut set = self.sources.lock().unwrap();
 			match set.get(id) {
@@ -189,7 +192,8 @@ impl Core {
 
 	pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<String>
 	where S: Into<i64> {
-		let owner: i64 = owner.into();
+		let owner = owner.into();
+
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Delete fetch conn:\n{:?}", &self.pool))?;
 		match sqlx::query("delete from rsstg_source where source_id = $1 and owner = $2;")
@@ -205,7 +209,8 @@ impl Core {
 
 	pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<String>
 	where S: Into<i64> {
-		let owner: i64 = owner.into();
+		let owner = owner.into();
+
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Clean fetch conn:\n{:?}", &self.pool))?;
 		match sqlx::query("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;")
@@ -221,7 +226,8 @@ impl Core {
 
 	pub async fn enable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
 	where S: Into<i64> {
-		let owner: i64 = owner.into();
+		let owner = owner.into();
+
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Enable fetch conn:\n{:?}", &self.pool))?;
 		match sqlx::query("update rsstg_source set enabled = true where source_id = $1 and owner = $2")
@@ -238,7 +244,8 @@ impl Core {
 
 	pub async fn disable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
 	where S: Into<i64> {
-		let owner: i64 = owner.into();
+		let owner = owner.into();
+
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Disable fetch conn:\n{:?}", &self.pool))?;
 		match sqlx::query("update rsstg_source set enabled = false where source_id = $1 and owner = $2")
@@ -255,7 +262,8 @@ impl Core {
 
 	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<String>
 	where S: Into<i64> {
-		let owner: i64 = owner.into();
+		let owner = owner.into();
+
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Update fetch conn:\n{:?}", &self.pool))?;
 
@@ -337,11 +345,12 @@ impl Core {
 	pub async fn list<S>(&self, owner: S) -> Result<String>
 	where S: Into<i64> {
 		let owner = owner.into();
+
 		let mut reply = vec![];
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("List fetch conn:\n{:?}", &self.pool))?;
 		reply.push("Channels:".to_string());
-		let rows = sqlx::query("select source_id, channel, enabled, url, iv_hash from rsstg_source where owner = $1 order by source_id")
+		let rows = sqlx::query("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
 			.bind(owner)
 			.fetch_all(&mut conn).await?;
 		for row in rows.iter() {
@@ -350,13 +359,17 @@ impl Core {
 			let enabled: bool = row.try_get("enabled")?;
 			let url: &str = row.try_get("url")?;
 			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
+			let url_re: Option<&str> = row.try_get("url_re")?;
 			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", source_id, username,  
 				match enabled {
 					true  => "🔄 enabled",
 					false => "⛔ disabled",
 				}, url));
 			if let Some(hash) = iv_hash {
-				reply.push(format!("IV `{}`", hash));
+				reply.push(format!("IV: `{}`", hash));
+			}
+			if let Some(re) = url_re {
+				reply.push(format!("RE: `{}`", re));
 			}
 		};
 		Ok(reply.join("\n"))

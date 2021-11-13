@@ -68,14 +68,20 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 			if ! RE_IV_HASH.is_match(hash) {
 				bail!("IV hash should be 14 hex digits.\nNot {:?}", hash);
 			};
-			Some(*hash)
+			match *hash {
+				"-" => None,
+				thing => Some(thing),
+			}
 		},
 		None => None,
 	};
 	let url_re = match url_re {
 		Some(re) => {
 			let _url_rex = ReplaceCommand::new(re).context("Regexp parsing error:")?;
-			Some(*re)
+			match *re {
+				"-" => None,
+				thing => Some(thing),
+			}
 		},
 		None => None,
 	};
