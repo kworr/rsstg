@@ -4,8 +4,7 @@ mod core;
 use config;
 use futures::StreamExt;
 use tokio;
-
-use telegram_bot::*;
+use telegram_bot;
 
 #[macro_use]
 extern crate lazy_static;
@@ -20,19 +19,19 @@ async fn main() -> Result<()> {
 	let core = core::Core::new(settings).await?;
 
 	let mut stream = core.stream();
-	stream.allowed_updates(&[AllowedUpdate::Message]);
-	let mut reply_to: Option<UserId>;
+	stream.allowed_updates(&[telegram_bot::AllowedUpdate::Message]);
+	let mut reply_to: Option<telegram_bot::UserId>;
 
 	loop {
 		reply_to = None;
 		match stream.next().await {
 			Some(update) => {
 				if let Err(err) = handle(update?, &core, &mut reply_to).await {
-					core.send(&format!("🛑 {:?}", err), reply_to)?;
+					core.send(&format!("🛑 {:?}", err), reply_to, None)?;
 				};
 			},
 			None => {
-				core.send(&format!("🛑 None error."), None)?;
+				core.send(&format!("🛑 None error."), None, None)?;
 			}
 		};
 	}
@@ -40,11 +39,11 @@ async fn main() -> Result<()> {
 	//Ok(())
 }
 
-async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: &Option<UserId>) -> Result<()> {
+async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: &Option<telegram_bot::UserId>) -> Result<()> {
 	match update.kind {
-		UpdateKind::Message(message) => {
+		telegram_bot::UpdateKind::Message(message) => {
 			match message.kind {
-				MessageKind::Text { ref data, .. } => {
+				telegram_bot::MessageKind::Text { ref data, .. } => {
 					let sender = message.from.id;
 					let words: Vec<&str> = data.split_whitespace().collect();
 					match words[0] {

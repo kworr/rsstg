@@ -11,12 +11,12 @@ lazy_static! {
 }
 
 pub async fn start(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
-	core.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.", Some(sender))?;
+	core.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.", Some(sender), None)?;
 	Ok(())
 }
 
 pub async fn list(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
-	core.send(core.list(sender).await?.join("\n"), Some(sender))?;
+	core.send(core.list(sender).await?, Some(sender), Some(telegram_bot::types::ParseMode::MarkdownV2))?;
 	Ok(())
 }
 
@@ -34,7 +34,7 @@ pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&st
 				.to_string(),
 			_ => bail!("Command {} not handled.", &command[0]),
 		},
-	}, Some(sender))?;
+	}, Some(sender), None)?;
 	Ok(())
 }
 
@@ -58,17 +58,17 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 		i_command.next(),
 		i_command.next());
 	if ! RE_USERNAME.is_match(&channel) {
-		core.send(format!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {:?}", &channel), Some(sender))?;
+		core.send(format!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {:?}", &channel), Some(sender), None)?;
 		return Ok(())
 	}
 	if ! RE_LINK.is_match(&url) {
-		core.send(format!("Link should be a link to atom/rss feed, something like \"https://domain/path\".\nNot {:?}", &url), Some(sender))?;
+		core.send(format!("Link should be a link to atom/rss feed, something like \"https://domain/path\".\nNot {:?}", &url), Some(sender), None)?;
 		return Ok(())
 	}
 	let iv_hash = match iv_hash {
 		Some(hash) => {
 			if ! RE_IV_HASH.is_match(hash) {
-				core.send(format!("IV hash should be 14 hex digits.\nNot {:?}", hash), Some(sender))?;
+				core.send(format!("IV hash should be 14 hex digits.\nNot {:?}", hash), Some(sender), None)?;
 				return Ok(())
 			};
 			Some(*hash)
@@ -92,5 +92,6 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 	};
 	if ! me   { bail!("I need to be admin on that channel\\."); };
 	if ! user { bail!("You should be admin on that channel\\."); };
-	core.send(core.update(source_id, channel, channel_id, url, iv_hash, None, sender).await?, Some(sender))
+	core.send(core.update(source_id, channel, channel_id, url, iv_hash, None, sender).await?, Some(sender), None)?;
+	Ok(())
 }

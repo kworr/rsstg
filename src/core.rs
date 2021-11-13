@@ -50,7 +50,7 @@ impl Core {
 		let clone = core.clone();
 		tokio::spawn(async move {
 			if let Err(err) = &clone.autofetch().await {
-				if let Err(err) = clone.send(&format!("🛑 {:?}", err), None) {
+				if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None) {
 					eprintln!("Autofetch error: {}", err);
 				};
 			}
@@ -62,13 +62,17 @@ impl Core {
 		self.tg.stream()
 	}
 
-	pub fn send<S>(&self, msg: S, target: Option<telegram_bot::UserId>) -> Result<()>
+	pub fn send<S>(&self, msg: S, target: Option<telegram_bot::UserId>, parse_mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
 	where S: Into<String> {
 		let msg: String = msg.into();
+		let parse_mode = match parse_mode {
+			Some(mode) => mode,
+			None => telegram_bot::types::ParseMode::Html,
+		};
 		self.tg.spawn(telegram_bot::SendMessage::new(match target {
 			Some(user) => user,
 			None => self.owner_chat,
-		}, msg.to_owned()));
+		}, msg.to_owned()).parse_mode(parse_mode));
 		Ok(())
 	}
 
@@ -322,7 +326,7 @@ impl Core {
 					};
 					tokio::spawn(async move {
 						if let Err(err) = clone.check(&source_id, owner, true).await {
-							if let Err(err) = clone.send(&format!("🛑 {:?}", err), None) {
+							if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None) {
 								eprintln!("Check error: {}", err);
 							};
 						};
@@ -339,7 +343,7 @@ impl Core {
 		}
 	}
 
-	pub async fn list<S>(&self, owner: S) -> Result<Vec<String>>
+	pub async fn list<S>(&self, owner: S) -> Result<String>
 	where S: Into<i64> {
 		let owner = owner.into();
 		let mut reply = vec![];
@@ -364,6 +368,6 @@ impl Core {
 				reply.push(format!("IV `{}`", hash));
 			}
 		};
-		Ok(reply)
+		Ok(reply.join("\n"))
 	}
 }
