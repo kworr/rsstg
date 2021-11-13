@@ -102,12 +102,7 @@ impl Core {
 			drop(conn);
 			let channel_id: i64 = row.try_get("channel_id")?;
 			let url: &str = row.try_get("url")?;
-			/*let url: Cow<'a, str> = match row.try_get("url") {
-				Ok(x) => String::from(x).to_owned().into(),
-				Err(err) => bail!("Test"),
-			};*/
 			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
-			//let url_re: Option<sedregex::ReplaceCommand> = match row.try_get("url_re")? {
 			let url_re = match row.try_get("url_re")? {
 				Some(x) => Some(sedregex::ReplaceCommand::new(x)?),
 				None => None,
@@ -164,11 +159,8 @@ impl Core {
 					};
 					self.tg.send( match iv_hash {
 							Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", match url_re {
-								Some(x) => {
-									bail!("Regex hit, result:\n{:#?}", x.execute(url));
-									url
-								},
-								None => url,
+								Some(ref x) => x.execute(url).to_string(),
+								None => url.to_string(),
 							}, hash)),
 							None => telegram_bot::SendMessage::new(destination, format!("{}", url)),
 						}.parse_mode(telegram_bot::types::ParseMode::Html)).await
@@ -319,8 +311,6 @@ impl Core {
 				let owner: i64 = row.try_get("owner")?;
 				let next_fetch: DateTime<chrono::Local> = row.try_get("next_fetch")?;
 				if next_fetch < now {
-					//let clone = self.clone();
-					//clone.owner_chat(UserId::new(owner));
 					let clone = Core {
 						owner_chat: telegram_bot::UserId::new(owner),
 						..self.clone()
