@@ -46,13 +46,15 @@ async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: 
 				telegram_bot::MessageKind::Text { ref data, .. } => {
 					let sender = message.from.id;
 					let words: Vec<&str> = data.split_whitespace().collect();
-					match words[0] {
-						"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(core, sender, words).await?,
-						"/start" => command::start(core, sender).await?,
-						"/list" => command::list(core, sender).await?,
-						"/add" | "/update" => command::update(core, sender, words).await?,
-						_ => {
-						},
+					match match words[0] {
+						"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(core, sender, words).await,
+						"/start" => command::start(core, sender).await,
+						"/list" => command::list(core, sender).await,
+						"/add" | "/update" => command::update(core, sender, words).await,
+						_ => Ok(()),
+					} {
+						Err(err) => core.send(&format!("🛑 {:?}", err), Some(sender), None)?,
+						Ok(()) => {},
 					};
 				},
 				_ => {

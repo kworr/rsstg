@@ -58,18 +58,15 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 		i_command.next(),
 		i_command.next());
 	if ! RE_USERNAME.is_match(&channel) {
-		core.send(format!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {:?}", &channel), Some(sender), None)?;
-		return Ok(())
-	}
+		bail!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {:?}", &channel);
+	};
 	if ! RE_LINK.is_match(&url) {
-		core.send(format!("Link should be a link to atom/rss feed, something like \"https://domain/path\".\nNot {:?}", &url), Some(sender), None)?;
-		return Ok(())
+		bail!("Link should be a link to atom/rss feed, something like \"https://domain/path\".\nNot {:?}", &url);
 	}
 	let iv_hash = match iv_hash {
 		Some(hash) => {
 			if ! RE_IV_HASH.is_match(hash) {
-				core.send(format!("IV hash should be 14 hex digits.\nNot {:?}", hash), Some(sender), None)?;
-				return Ok(())
+				bail!("IV hash should be 14 hex digits.\nNot {:?}", hash);
 			};
 			Some(*hash)
 		}
@@ -80,7 +77,7 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 	};
 	let channel_id = i64::from(core.tg.send(telegram_bot::GetChat::new(telegram_bot::types::ChatRef::ChannelUsername(channel.to_string()))).await?.id());
 	let chan_adm = core.tg.send(telegram_bot::GetChatAdministrators::new(telegram_bot::types::ChatRef::ChannelUsername(channel.to_string()))).await
-		.context("Sorry, I have no access to that chat\\.")?;
+		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
 	for admin in chan_adm {
 		if admin.user.id == core.my.id {
@@ -90,8 +87,8 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 			user = true;
 		};
 	};
-	if ! me   { bail!("I need to be admin on that channel\\."); };
-	if ! user { bail!("You should be admin on that channel\\."); };
+	if ! me   { bail!("I need to be admin on that channel."); };
+	if ! user { bail!("You should be admin on that channel."); };
 	core.send(core.update(source_id, channel, channel_id, url, iv_hash, None, sender).await?, Some(sender), None)?;
 	Ok(())
 }
