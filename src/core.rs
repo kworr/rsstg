@@ -116,7 +116,9 @@ impl Core {
 			};
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
-			let content = reqwest::get(url).await?.bytes().await?;
+			let response = reqwest::get(url).await?;
+			let status = response.status();
+			let content = response.bytes().await?;
 			match rss::Channel::read_from(&content[..]) {
 				Ok(feed) => {
 					for item in feed.items() {
@@ -136,7 +138,7 @@ impl Core {
 				Err(err) => match err {
 					rss::Error::InvalidStartTag => {
 						let feed = atom_syndication::Feed::read_from(&content[..])
-							.with_context(|| format!("Problem opening feed url:\n{}", &url))?;
+							.with_context(|| format!("Problem opening feed url:\n{}\n{}", &url, status))?;
 						for item in feed.entries() {
 							let date = item.published().unwrap();
 							let url = item.links()[0].href();
@@ -144,7 +146,7 @@ impl Core {
 						};
 					},
 					rss::Error::Eof => (),
-					_ => bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n", &url, err)
+					_ => bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n{:#?}\n", &url, err, status)
 				}
 			};
 			for (date, url) in posts.iter() {
@@ -160,12 +162,13 @@ impl Core {
 					if this_fetch == None || *date > this_fetch.unwrap() {
 						this_fetch = Some(*date);
 					};
+					let post_url = match url_re {
+						Some(ref x) => x.execute(url).to_string(),
+						None => url.to_string(),
+					};
 					self.tg.send( match iv_hash {
-							Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", match url_re {
-								Some(ref x) => x.execute(url).to_string(),
-								None => url.to_string(),
-							}, hash)),
-							None => telegram_bot::SendMessage::new(destination, format!("{}", url)),
+							Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", post_url, hash)),
+							None => telegram_bot::SendMessage::new(destination, format!("{}", post_url)),
 						}.parse_mode(telegram_bot::types::ParseMode::Html)).await
 						.context("Can't post message:")?;
 					sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
