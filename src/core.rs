@@ -152,8 +152,12 @@ impl Core {
 			for (date, url) in posts.iter() {
 				let mut conn = self.pool.acquire().await
 					.with_context(|| format!("Check post fetch conn:\n{:?}", &self.pool))?;
+				let post_url = match url_re {
+					Some(ref x) => x.execute(url).to_string(),
+					None => url.to_string(),
+				};
 				let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
-					.bind(url)
+					.bind(&post_url)
 					.bind(*id)
 					.fetch_one(&mut conn).await
 					.with_context(|| format!("Check post:\n{:?}", &conn))?;
@@ -162,19 +166,15 @@ impl Core {
 					if this_fetch == None || *date > this_fetch.unwrap() {
 						this_fetch = Some(*date);
 					};
-					let post_url = match url_re {
-						Some(ref x) => x.execute(url).to_string(),
-						None => url.to_string(),
-					};
 					self.tg.send( match iv_hash {
-							Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", post_url, hash)),
+							Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", &post_url, hash)),
 							None => telegram_bot::SendMessage::new(destination, format!("{}", post_url)),
 						}.parse_mode(telegram_bot::types::ParseMode::Html)).await
 						.context("Can't post message:")?;
 					sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
 						.bind(*id)
 						.bind(date)
-						.bind(url)
+						.bind(post_url)
 						.execute(&mut conn).await
 						.with_context(|| format!("Record post:\n{:?}", &conn))?;
 					drop(conn);
