@@ -77,7 +77,7 @@ impl Core {
 		Ok(())
 	}
 
-	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<String>
+	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -152,12 +152,12 @@ impl Core {
 			for (date, url) in posts.iter() {
 				let mut conn = self.pool.acquire().await
 					.with_context(|| format!("Check post fetch conn:\n{:?}", &self.pool))?;
-				let post_url = match url_re {
-					Some(ref x) => x.execute(url).to_string(),
-					None => url.to_string(),
+				let post_url: Cow<str> = match url_re {
+					Some(ref x) => x.execute(url).into(),
+					None => url.into(),
 				};
 				let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
-					.bind(&post_url)
+					.bind(&*post_url)
 					.bind(*id)
 					.fetch_one(&mut conn).await
 					.with_context(|| format!("Check post:\n{:?}", &conn))?;
@@ -174,7 +174,7 @@ impl Core {
 					sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
 						.bind(*id)
 						.bind(date)
-						.bind(post_url)
+						.bind(&*post_url)
 						.execute(&mut conn).await
 						.with_context(|| format!("Record post:\n{:?}", &conn))?;
 					drop(conn);
@@ -190,10 +190,10 @@ impl Core {
 			.bind(*id)
 			.execute(&mut conn).await
 			.with_context(|| format!("Update scrape:\n{:?}", &conn))?;
-		Ok(format!("Posted: {}", &posted))
+		Ok(format!("Posted: {}", &posted).into())
 	}
 
-	pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<String>
+	pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -205,12 +205,12 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Delete source rule:\n{:?}", &self.pool))?
 			.rows_affected() {
-			0 => { Ok("No data found found.".to_string()) },
-			x => { Ok(format!("{} sources removed.", x)) },
+			0 => { Ok("No data found found.".into()) },
+			x => { Ok(format!("{} sources removed.", x).into()) },
 		}
 	}
 
-	pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<String>
+	pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -222,8 +222,8 @@ impl Core {
 			.execute(&mut conn).await
 			.with_context(|| format!("Clean seen posts:\n{:?}", &self.pool))?
 			.rows_affected() {
-			0 => { Ok("No data found found.".to_string()) },
-			x => { Ok(format!("{} posts purged.", x)) },
+			0 => { Ok("No data found found.".into()) },
+			x => { Ok(format!("{} posts purged.", x).into()) },
 		}
 	}
 
@@ -263,7 +263,7 @@ impl Core {
 		}
 	}
 
-	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<String>
+	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -285,20 +285,20 @@ impl Core {
 			.bind(channel)
 			.bind(url_re)
 			.execute(&mut conn).await {
-			Ok(_) => return Ok(String::from(match update {
+			Ok(_) => return Ok(match update {
 				Some(_) => "Channel updated.",
 				None => "Channel added.",
-			})),
+			}),
 			Err(sqlx::Error::Database(err)) => {
 				match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
 					Some("_bt_check_unique", ) => {
-						return Ok("Duplicate key.".to_string())
+						return Ok("Duplicate key.")
 					},
 					Some(_) => {
-						return Ok("Database error.".to_string())
+						return Ok("Database error.")
 					},
 					None => {
-						return Ok("No database error extracted.".to_string())
+						return Ok("No database error extracted.")
 					},
 				};
 			},
@@ -349,10 +349,10 @@ impl Core {
 	where S: Into<i64> {
 		let owner = owner.into();
 
-		let mut reply = vec![];
+		let mut reply: Vec<Cow<str>> = vec![];
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("List fetch conn:\n{:?}", &self.pool))?;
-		reply.push("Channels:".to_string());
+		reply.push("Channels:".into());
 		let rows = sqlx::query("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
 			.bind(owner)
 			.fetch_all(&mut conn).await?;
@@ -367,12 +367,12 @@ impl Core {
 				match enabled {
 					true  => "🔄 enabled",
 					false => "⛔ disabled",
-				}, url));
+				}, url).into());
 			if let Some(hash) = iv_hash {
-				reply.push(format!("IV: `{}`", hash));
+				reply.push(format!("IV: `{}`", hash).into());
 			}
 			if let Some(re) = url_re {
-				reply.push(format!("RE: `{}`", re));
+				reply.push(format!("RE: `{}`", re).into());
 			}
 		};
 		Ok(reply.join("\n"))

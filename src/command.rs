@@ -22,16 +22,14 @@ pub async fn list(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
 
 pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&str>) -> Result<()> {
 	core.send( match &command[1].parse::<i32>() {
-		Err(err) => format!("I need a number\\.\n{}", &err),
+		Err(err) => format!("I need a number\\.\n{}", &err).into(),
 		Ok(number) => match command[0] {
 			"/check" => core.check(&number, sender, false).await
 				.context("Channel check failed.")?,
 			"/clean" => core.clean(&number, sender).await?,
-			"/enable" => core.enable(&number, sender).await?
-				.to_string(),
+			"/enable" => core.enable(&number, sender).await?.into(),
 			"/delete" => core.delete(&number, sender).await?,
-			"/disable" => core.disable(&number, sender).await?
-				.to_string(),
+			"/disable" => core.disable(&number, sender).await?.into(),
 			_ => bail!("Command {} not handled.", &command[0]),
 		},
 	}, Some(sender), None)?;
@@ -89,8 +87,9 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 		},
 		None => None,
 	};
-	let channel_id = i64::from(core.tg.send(telegram_bot::GetChat::new(telegram_bot::types::ChatRef::ChannelUsername(channel.to_string()))).await?.id());
-	let chan_adm = core.tg.send(telegram_bot::GetChatAdministrators::new(telegram_bot::types::ChatRef::ChannelUsername(channel.to_string()))).await
+	let s_channel = &channel.to_string();
+	let channel_id = i64::from(core.tg.send(telegram_bot::GetChat::new(telegram_bot::types::ChatRef::ChannelUsername(s_channel.into()))).await?.id());
+	let chan_adm = core.tg.send(telegram_bot::GetChatAdministrators::new(telegram_bot::types::ChatRef::ChannelUsername(s_channel.into()))).await
 		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
 	for admin in chan_adm {
