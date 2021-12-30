@@ -11,7 +11,7 @@ lazy_static! {
 }
 
 pub async fn start(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
-	core.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.", Some(sender), None)?;
+	core.send("We are open. Probably. Visit [channel](https://t.me/rsstg_bot_help/3) for details.", Some(sender), None)?;
 	Ok(())
 }
 
@@ -22,7 +22,7 @@ pub async fn list(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
 
 pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&str>) -> Result<()> {
 	core.send( match &command[1].parse::<i32>() {
-		Err(err) => format!("I need a number\\.\n{}", &err).into(),
+		Err(err) => format!("I need a number.\n{}", &err).into(),
 		Ok(number) => match command[0] {
 			"/check" => core.check(&number, sender, false).await
 				.context("Channel check failed.")?,
