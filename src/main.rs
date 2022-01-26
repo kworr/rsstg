@@ -35,8 +35,6 @@ async fn main() -> Result<()> {
 			}
 		};
 	}
-
-	//Ok(())
 }
 
 async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: &Option<telegram_bot::UserId>) -> Result<()> {

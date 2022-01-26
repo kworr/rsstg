@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.2.5"
+version = "0.2.7"
 authors = ["arcade"]
 edition = "2018"
 
