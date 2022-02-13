@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use crate::core::Core;
 use regex::Regex;
 use sedregex::ReplaceCommand;
+use std::borrow::Cow;
 
 lazy_static! {
 	static ref RE_USERNAME: Regex = Regex::new(r"^@[a-zA-Z][a-zA-Z0-9_]+$").unwrap();
@@ -10,17 +11,17 @@ lazy_static! {
 }
 
 pub async fn start(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
-	core.send("We are open. Probably. Visit [channel](https://t.me/rsstg_bot_help/3) for details.", Some(sender), None)?;
+	core.send("We are open. Probably. Visit [channel](https://t.me/rsstg_bot_help/3) for details.", Some(sender), None).await?;
 	Ok(())
 }
 
 pub async fn list(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
-	core.send(core.list(sender).await?, Some(sender), Some(telegram_bot::types::ParseMode::MarkdownV2))?;
+	core.send(core.list(sender).await?, Some(sender), Some(telegram_bot::types::ParseMode::MarkdownV2)).await?;
 	Ok(())
 }
 
 pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&str>) -> Result<()> {
-	core.send( match &command[1].parse::<i32>() {
+	let msg: Cow<str> = match &command[1].parse::<i32>() {
 		Err(err) => format!("I need a number.\n{}", &err).into(),
 		Ok(number) => match command[0] {
 			"/check" => core.check(number, sender, false).await
@@ -31,7 +32,8 @@ pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&st
 			"/disable" => core.disable(number, sender).await?.into(),
 			_ => bail!("Command {} not handled.", &command[0]),
 		},
-	}, Some(sender), None)?;
+	};
+	core.send(msg, Some(sender), None).await?;
 	Ok(())
 }
 
@@ -101,6 +103,6 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 	};
 	if ! me   { bail!("I need to be admin on that channel."); };
 	if ! user { bail!("You should be admin on that channel."); };
-	core.send(core.update(source_id, channel, channel_id, url, iv_hash, url_re, sender.into()).await?, Some(sender), None)?;
+	core.send(core.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(sender), None).await?;
 	Ok(())
 }

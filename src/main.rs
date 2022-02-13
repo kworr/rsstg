@@ -24,11 +24,11 @@ async fn main() -> Result<()> {
 		match stream.next().await {
 			Some(update) => {
 				if let Err(err) = handle(update?, &core, &reply_to).await {
-					core.send(&format!("🛑 {:?}", err), reply_to, None)?;
+					core.send(&format!("🛑 {:?}", err), reply_to, None).await?;
 				};
 			},
 			None => {
-				core.send("🛑 None error.".to_string(), None, None)?;
+				core.send("🛑 None error.", None, None).await?;
 			}
 		};
 	}
@@ -46,7 +46,7 @@ async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: 
 				"/add" | "/update" => command::update(core, sender, words).await,
 				_ => Ok(()),
 			} {
-				Err(err) => core.send(&format!("🛑 {:?}", err), Some(sender), None)?,
+				Err(err) => core.send(format!("🛑 {:?}", err), Some(sender), None).await?,
 				Ok(()) => {},
 			};
 		};

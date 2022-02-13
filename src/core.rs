@@ -44,10 +44,17 @@ impl Core {
 		});
 		let clone = core.clone();
 		tokio::spawn(async move {
-			if let Err(err) = &clone.autofetch().await {
-				if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None) {
-					eprintln!("Autofetch error: {}", err);
+			loop {
+				let delay = match &clone.autofetch().await {
+					Err(err) => {
+						if let Err(err) = clone.send(format!("🛑 {:?}", err), None, None).await {
+							eprintln!("Autofetch error: {}", err);
+						};
+						tokio::time::Duration::from_secs(60)
+					},
+					Ok(time) => *time,
 				};
+				tokio::time::sleep(delay).await;
 			}
 		});
 		Ok(core)
@@ -57,18 +64,13 @@ impl Core {
 		self.tg.stream()
 	}
 
-	pub fn send<'a, S>(&self, msg: S, target: Option<telegram_bot::UserId>, parse_mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
+	pub async fn send<'a, S>(&self, msg: S, target: Option<telegram_bot::UserId>, mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
 	where S: Into<Cow<'a, str>> {
 		let msg = msg.into();
 
-		let parse_mode = match parse_mode {
-			Some(mode) => mode,
-			None => telegram_bot::types::ParseMode::Html,
-		};
-		self.tg.spawn(telegram_bot::SendMessage::new(match target {
-			Some(user) => user,
-			None => self.owner_chat,
-		}, msg).parse_mode(parse_mode));
+		let mode = mode.unwrap_or(telegram_bot::types::ParseMode::Html);
+		let target = target.unwrap_or(self.owner_chat);
+		self.tg.send(telegram_bot::SendMessage::new(target, msg).parse_mode(mode)).await?;
 		Ok(())
 	}
 
@@ -123,7 +125,7 @@ impl Core {
 								None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
 							}?;
 							let url = link;
-							posts.insert(date, url.into());
+							posts.insert(date, url.to_string());
 						}
 					};
 				},
@@ -134,7 +136,7 @@ impl Core {
 						for item in feed.entries() {
 							let date = item.published().unwrap();
 							let url = item.links()[0].href();
-							posts.insert(*date, url.into());
+							posts.insert(*date, url.to_string());
 						};
 					},
 					rss::Error::Eof => (),
@@ -255,9 +257,9 @@ impl Core {
 		}
 	}
 
-	pub async fn update(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: i64) -> Result<&str> {
-	//where S: Into<i64> {
-		//let owner = owner.into();
+	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
+	where S: Into<i64> {
+		let owner = owner.into();
 
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Update fetch conn:\n{:?}", &self.pool))?;
@@ -300,39 +302,35 @@ impl Core {
 		}
 	}
 
-	async fn autofetch(&self) -> Result<()> {
+	async fn autofetch(&self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
-		let mut now;
-		loop {
-			let mut conn = self.pool.acquire().await
-				.with_context(|| format!("Autofetch fetch conn:\n{:?}", &self.pool))?;
-			now = chrono::Local::now();
-			let mut queue = sqlx::query("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
-				.fetch_all(&mut conn).await?;
-			for row in queue.iter() {
-				let source_id: i32 = row.try_get("source_id")?;
-				let owner: i64 = row.try_get("owner")?;
-				let next_fetch: DateTime<chrono::Local> = row.try_get("next_fetch")?;
-				if next_fetch < now {
-					let clone = Core {
-						owner_chat: telegram_bot::UserId::new(owner),
-						..self.clone()
-					};
-					tokio::spawn(async move {
-						if let Err(err) = clone.check(&source_id, owner, true).await {
-							if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None) {
-								eprintln!("Check error: {}", err);
-							};
+		let mut conn = self.pool.acquire().await
+			.with_context(|| format!("Autofetch fetch conn:\n{:?}", &self.pool))?;
+		let now = chrono::Local::now();
+		let mut queue = sqlx::query("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
+			.fetch_all(&mut conn).await?;
+		for row in queue.iter() {
+			let source_id: i32 = row.try_get("source_id")?;
+			let owner: i64 = row.try_get("owner")?;
+			let next_fetch: DateTime<chrono::Local> = row.try_get("next_fetch")?;
+			if next_fetch < now {
+				let clone = Core {
+					owner_chat: telegram_bot::UserId::new(owner),
+					..self.clone()
+				};
+				tokio::spawn(async move {
+					if let Err(err) = clone.check(&source_id, owner, true).await {
+						if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None).await {
+							eprintln!("Check error: {}", err);
 						};
-					});
-				} else if next_fetch - now < delay {
-					delay = next_fetch - now;
-				}
-			};
-			queue.clear();
-			tokio::time::sleep(delay.to_std()?).await;
-			delay = chrono::Duration::minutes(1);
-		}
+					};
+				});
+			} else if next_fetch - now < delay {
+				delay = next_fetch - now;
+			}
+		};
+		queue.clear();
+		Ok(delay.to_std()?)
 	}
 
 	pub async fn list<S>(&self, owner: S) -> Result<String>
