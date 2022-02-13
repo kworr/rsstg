@@ -1,13 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
-use atom_syndication;
 use chrono::DateTime;
-use config;
-use reqwest;
 use sqlx::{
 	postgres::PgPoolOptions,
 	Row,
 };
-use rss;
 use std::{
 	borrow::Cow,
 	collections::{
@@ -16,12 +12,11 @@ use std::{
 	},
 	sync::{Arc, Mutex},
 };
-use telegram_bot;
 
 #[derive(Clone)]
 pub struct Core {
-	owner: i64,
-	api_key: String,
+	//owner: i64,
+	//api_key: String,
 	owner_chat: telegram_bot::UserId,
 	pub tg: telegram_bot::Api,
 	pub my: telegram_bot::User,
@@ -30,15 +25,15 @@ pub struct Core {
 }
 
 impl Core {
-	pub async fn new(settings: config::Config) -> Result<Core> {
+	pub async fn new(settings: config::Config) -> Result<Arc<Core>> {
 		let owner = settings.get_int("owner")?;
 		let api_key = settings.get_str("api_key")?;
 		let tg = telegram_bot::Api::new(&api_key);
-		let core = Core {
-			owner: owner,
-			api_key: api_key.clone(),
+		let core = Arc::new(Core {
+			//owner,
+			//api_key: api_key.clone(),
 			my: tg.send(telegram_bot::GetMe).await?,
-			tg: tg,
+			tg,
 			owner_chat: telegram_bot::UserId::new(owner),
 			pool: PgPoolOptions::new()
 				.max_connections(5)
@@ -46,7 +41,7 @@ impl Core {
 				.idle_timeout(std::time::Duration::new(60, 0))
 				.connect_lazy(&settings.get_str("pg")?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
-		};
+		});
 		let clone = core.clone();
 		tokio::spawn(async move {
 			if let Err(err) = &clone.autofetch().await {
@@ -122,16 +117,13 @@ impl Core {
 			match rss::Channel::read_from(&content[..]) {
 				Ok(feed) => {
 					for item in feed.items() {
-						match item.link() {
-							Some(link) => {
-								let date = match item.pub_date() {
-									Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
-									None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
-								}?;
-								let url = link;
-								posts.insert(date.clone(), url.into());
-							},
-							None => {}
+						if let Some(link) = item.link() {
+							let date = match item.pub_date() {
+								Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
+								None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
+							}?;
+							let url = link;
+							posts.insert(date, url.into());
 						}
 					};
 				},
@@ -142,7 +134,7 @@ impl Core {
 						for item in feed.entries() {
 							let date = item.published().unwrap();
 							let url = item.links()[0].href();
-							posts.insert(date.clone(), url.into());
+							posts.insert(*date, url.into());
 						};
 					},
 					rss::Error::Eof => (),
@@ -153,7 +145,7 @@ impl Core {
 				let mut conn = self.pool.acquire().await
 					.with_context(|| format!("Check post fetch conn:\n{:?}", &self.pool))?;
 				let post_url: Cow<str> = match url_re {
-					Some(ref x) => x.execute(url).into(),
+					Some(ref x) => x.execute(url),
 					None => url.into(),
 				};
 				let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
@@ -263,9 +255,9 @@ impl Core {
 		}
 	}
 
-	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
-	where S: Into<i64> {
-		let owner = owner.into();
+	pub async fn update(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: i64) -> Result<&str> {
+	//where S: Into<i64> {
+		//let owner = owner.into();
 
 		let mut conn = self.pool.acquire().await
 			.with_context(|| format!("Update fetch conn:\n{:?}", &self.pool))?;
@@ -285,27 +277,27 @@ impl Core {
 			.bind(channel)
 			.bind(url_re)
 			.execute(&mut conn).await {
-			Ok(_) => return Ok(match update {
+			Ok(_) => Ok(match update {
 				Some(_) => "Channel updated.",
 				None => "Channel added.",
 			}),
 			Err(sqlx::Error::Database(err)) => {
 				match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
 					Some("_bt_check_unique", ) => {
-						return Ok("Duplicate key.")
+						Ok("Duplicate key.")
 					},
 					Some(_) => {
-						return Ok("Database error.")
+						Ok("Database error.")
 					},
 					None => {
-						return Ok("No database error extracted.")
+						Ok("No database error extracted.")
 					},
-				};
+				}
 			},
 			Err(err) => {
 				bail!("Sorry, unknown error:\n{:#?}\n", err);
 			},
-		};
+		}
 	}
 
 	async fn autofetch(&self) -> Result<()> {
@@ -333,10 +325,8 @@ impl Core {
 							};
 						};
 					});
-				} else {
-					if next_fetch - now < delay {
-						delay = next_fetch - now;
-					}
+				} else if next_fetch - now < delay {
+					delay = next_fetch - now;
 				}
 			};
 			queue.clear();
