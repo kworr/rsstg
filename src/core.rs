@@ -66,8 +66,6 @@ impl Core {
 
 	pub async fn send<'a, S>(&self, msg: S, target: Option<telegram_bot::UserId>, mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
 	where S: Into<Cow<'a, str>> {
-		let msg = msg.into();
-
 		let mode = mode.unwrap_or(telegram_bot::types::ParseMode::Html);
 		let target = target.unwrap_or(self.owner_chat);
 		self.tg.send(telegram_bot::SendMessage::new(target, msg).parse_mode(mode)).await?;
