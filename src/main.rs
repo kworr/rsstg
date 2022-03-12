@@ -2,16 +2,13 @@ mod command;
 mod core;
 
 use futures::StreamExt;
-
-#[macro_use]
-extern crate lazy_static;
-
 use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	let mut settings = config::Config::default();
-	settings.merge(config::File::with_name("rsstg"))?;
+	let settings = config::Config::builder()
+		.add_source(config::File::with_name("rsstg"))
+		.build()?;
 
 	let core = core::Core::new(settings).await?;
 

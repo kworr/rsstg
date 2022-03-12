@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use crate::core::Core;
+use lazy_static::lazy_static;
 use regex::Regex;
 use sedregex::ReplaceCommand;
 use std::borrow::Cow;

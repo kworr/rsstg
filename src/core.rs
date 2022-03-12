@@ -27,7 +27,7 @@ pub struct Core {
 impl Core {
 	pub async fn new(settings: config::Config) -> Result<Arc<Core>> {
 		let owner = settings.get_int("owner")?;
-		let api_key = settings.get_str("api_key")?;
+		let api_key = settings.get_string("api_key")?;
 		let tg = telegram_bot::Api::new(&api_key);
 		let core = Arc::new(Core {
 			//owner,
@@ -39,7 +39,7 @@ impl Core {
 				.max_connections(5)
 				.connect_timeout(std::time::Duration::new(300, 0))
 				.idle_timeout(std::time::Duration::new(60, 0))
-				.connect_lazy(&settings.get_str("pg")?)?,
+				.connect_lazy(&settings.get_string("pg")?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
 		});
 		let clone = core.clone();
