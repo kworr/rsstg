@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use async_std::task;
 use chrono::DateTime;
 use sqlx::{
 	postgres::PgPoolOptions,
@@ -15,8 +16,6 @@ use std::{
 
 #[derive(Clone)]
 pub struct Core {
-	//owner: i64,
-	//api_key: String,
 	owner_chat: telegram_bot::UserId,
 	pub tg: telegram_bot::Api,
 	pub my: telegram_bot::User,
@@ -25,15 +24,16 @@ pub struct Core {
 }
 
 impl Core {
-	pub async fn new(settings: config::Config) -> Result<Arc<Core>> {
+	pub fn new(settings: config::Config) -> Result<Arc<Core>> {
 		let owner = settings.get_int("owner")?;
 		let api_key = settings.get_string("api_key")?;
 		let tg = telegram_bot::Api::new(&api_key);
+		let tg_cloned = tg.clone();
 		let core = Arc::new(Core {
-			//owner,
-			//api_key: api_key.clone(),
-			my: tg.send(telegram_bot::GetMe).await?,
 			tg,
+			my: task::block_on(async {
+				tg_cloned.send(telegram_bot::GetMe).await
+			})?,
 			owner_chat: telegram_bot::UserId::new(owner),
 			pool: PgPoolOptions::new()
 				.max_connections(5)
@@ -43,18 +43,18 @@ impl Core {
 			sources: Arc::new(Mutex::new(HashSet::new())),
 		});
 		let clone = core.clone();
-		tokio::spawn(async move {
+		task::spawn(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
 						if let Err(err) = clone.send(format!("🛑 {:?}", err), None, None).await {
 							eprintln!("Autofetch error: {}", err);
 						};
-						tokio::time::Duration::from_secs(60)
+						std::time::Duration::from_secs(60)
 					},
 					Ok(time) => *time,
 				};
-				tokio::time::sleep(delay).await;
+				task::sleep(delay).await;
 			}
 		});
 		Ok(core)
@@ -170,7 +170,7 @@ impl Core {
 						.execute(&mut conn).await
 						.with_context(|| format!("Record post:\n{:?}", &conn))?;
 					drop(conn);
-					tokio::time::sleep(std::time::Duration::new(4, 0)).await;
+					task::sleep(std::time::Duration::new(4, 0)).await;
 				};
 				posted += 1;
 			};
@@ -316,7 +316,7 @@ impl Core {
 					owner_chat: telegram_bot::UserId::new(owner),
 					..self.clone()
 				};
-				tokio::spawn(async move {
+				task::spawn(async move {
 					if let Err(err) = clone.check(&source_id, owner, true).await {
 						if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None).await {
 							eprintln!("Check error: {}", err);

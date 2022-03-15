@@ -1,34 +1,36 @@
 mod command;
 mod core;
 
-use futures::StreamExt;
 use anyhow::Result;
+use async_std::task;
+use futures::StreamExt;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
 	let settings = config::Config::builder()
 		.add_source(config::File::with_name("rsstg"))
 		.build()?;
 
-	let core = core::Core::new(settings).await?;
+	let core = core::Core::new(settings)?;
 
 	let mut stream = core.stream();
 	stream.allowed_updates(&[telegram_bot::AllowedUpdate::Message]);
-	let mut reply_to: Option<telegram_bot::UserId>;
 
-	loop {
-		reply_to = None;
-		match stream.next().await {
-			Some(update) => {
-				if let Err(err) = handle(update?, &core, &reply_to).await {
-					core.send(&format!("🛑 {:?}", err), reply_to, None).await?;
-				};
-			},
-			None => {
-				core.send("🛑 None error.", None, None).await?;
-			}
-		};
-	}
+	task::block_on(async {
+		let mut reply_to: Option<telegram_bot::UserId>;
+		loop {
+			reply_to = None;
+			match stream.next().await {
+				Some(update) => {
+					if let Err(err) = handle(update?, &core, &reply_to).await {
+						core.send(&format!("🛑 {:?}", err), reply_to, None).await?;
+					};
+				},
+				None => {
+					core.send("🛑 None error.", None, None).await?;
+				}
+			};
+		}
+	})
 }
 
 async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: &Option<telegram_bot::UserId>) -> Result<()> {
