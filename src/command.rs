@@ -41,17 +41,17 @@ pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&st
 pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str>) -> Result<()> {
 	let mut source_id: Option<i32> = None;
 	let at_least = "Requires at least 3 parameters.";
-	let first_word = command[0];
-	let command = match first_word {
-		"/update" => {
-			source_id = Some(command[1].parse::<i32>()
-				.context(format!("I need a number, but got {}.", command[1]))?);
-			&command[2..]
-		},
-		"/add" => &command[1..],
-		_ => bail!("Passing {} is not possible here.", command[1]),
-	};
 	let mut i_command = command.iter();
+	let first_word = i_command.next().context(at_least)?;
+	match *first_word {
+		"/update" => {
+			let next_word = i_command.next().context(at_least)?;
+			source_id = Some(next_word.parse::<i32>()
+				.context(format!("I need a number, but got {}.", next_word))?);
+		},
+		"/add" => {},
+		_ => bail!("Passing {} is not possible here.", first_word),
+	};
 	let (channel, url, iv_hash, url_re) = (
 		i_command.next().context(at_least)?,
 		i_command.next().context(at_least)?,
