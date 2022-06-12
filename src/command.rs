@@ -22,19 +22,23 @@ pub async fn list(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
 }
 
 pub async fn command(core: &Core, sender: telegram_bot::UserId, command: Vec<&str>) -> Result<()> {
-	let msg: Cow<str> = match &command[1].parse::<i32>() {
-		Err(err) => format!("I need a number.\n{}", &err).into(),
-		Ok(number) => match command[0] {
-			"/check" => core.check(number, sender, false).await
-				.context("Channel check failed.")?,
-			"/clean" => core.clean(number, sender).await?,
-			"/enable" => core.enable(number, sender).await?.into(),
-			"/delete" => core.delete(number, sender).await?,
-			"/disable" => core.disable(number, sender).await?.into(),
-			_ => bail!("Command {} not handled.", &command[0]),
-		},
-	};
-	core.send(msg, Some(sender), None).await?;
+	if command.len() >= 2 {
+		let msg: Cow<str> = match &command[1].parse::<i32>() {
+			Err(err) => format!("I need a number.\n{}", &err).into(),
+			Ok(number) => match command[0] {
+				"/check" => core.check(number, sender, false).await
+					.context("Channel check failed.")?,
+				"/clean" => core.clean(number, sender).await?,
+				"/enable" => core.enable(number, sender).await?.into(),
+				"/delete" => core.delete(number, sender).await?,
+				"/disable" => core.disable(number, sender).await?.into(),
+				_ => bail!("Command {} not handled.", &command[0]),
+			},
+		};
+		core.send(msg, Some(sender), None).await?;
+	} else {
+		core.send("This command needs a number.", Some(sender), None).await?;
+	}
 	Ok(())
 }
 
