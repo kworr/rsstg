@@ -37,7 +37,7 @@ impl Core {
 			owner_chat: telegram_bot::UserId::new(owner),
 			pool: PgPoolOptions::new()
 				.max_connections(5)
-				.connect_timeout(std::time::Duration::new(300, 0))
+				.acquire_timeout(std::time::Duration::new(300, 0))
 				.idle_timeout(std::time::Duration::new(60, 0))
 				.connect_lazy(&settings.get_string("pg")?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
