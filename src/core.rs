@@ -27,7 +27,7 @@ impl Core {
 	pub fn new(settings: config::Config) -> Result<Arc<Core>> {
 		let owner = settings.get_int("owner")?;
 		let api_key = settings.get_string("api_key")?;
-		let tg = telegram_bot::Api::new(&api_key);
+		let tg = telegram_bot::Api::new(api_key);
 		let tg_cloned = tg.clone();
 		let core = Arc::new(Core {
 			tg,
@@ -155,7 +155,7 @@ impl Core {
 					.with_context(|| format!("Check post:\n{:?}", &conn))?;
 				let exists: bool = row.try_get("exists")?;
 				if ! exists {
-					if this_fetch == None || *date > this_fetch.unwrap() {
+					if this_fetch.is_none() || *date > this_fetch.unwrap() {
 						this_fetch = Some(*date);
 					};
 					self.tg.send( match iv_hash {
