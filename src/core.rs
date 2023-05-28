@@ -21,6 +21,7 @@ pub struct Core {
 	pub my: telegram_bot::User,
 	pool: sqlx::Pool<sqlx::Postgres>,
 	sources: Arc<Mutex<HashSet<Arc<i32>>>>,
+	http_client: reqwest::Client,
 }
 
 impl Core {
@@ -29,6 +30,14 @@ impl Core {
 		let api_key = settings.get_string("api_key")?;
 		let tg = telegram_bot::Api::new(api_key);
 		let tg_cloned = tg.clone();
+
+		let proxy = settings.get_string("proxy")?;
+		let mut client = reqwest::Client::builder();
+		if !proxy.is_empty() {
+			let proxy = reqwest::Proxy::all(proxy)?;
+			client = client.proxy(proxy);
+		}
+		let http_client = client.build()?;
 		let core = Arc::new(Core {
 			tg,
 			my: task::block_on(async {
@@ -41,6 +50,7 @@ impl Core {
 				.idle_timeout(std::time::Duration::new(60, 0))
 				.connect_lazy(&settings.get_string("pg")?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
+			http_client,
 		});
 		let clone = core.clone();
 		task::spawn(async move {
@@ -98,6 +108,7 @@ impl Core {
 				.fetch_one(&mut conn).await
 				.with_context(|| format!("Query source:\n{:?}", &self.pool))?;
 			drop(conn);
+
 			let channel_id: i64 = row.try_get("channel_id")?;
 			let url: &str = row.try_get("url")?;
 			let iv_hash: Option<&str> = row.try_get("iv_hash")?;
@@ -111,7 +122,8 @@ impl Core {
 			};
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
-			let response = reqwest::get(url).await?;
+
+			let response = self.http_client.get(url).send().await?;
 			let status = response.status();
 			let content = response.bytes().await?;
 			match rss::Channel::read_from(&content[..]) {

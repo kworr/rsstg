@@ -1,3 +1,4 @@
 pg = "postgres://user:password@hostname/database"
 api_key = "speak with @BotFather to get one"
-owner = Your ID (for debugging)
+owner = "Your ID (for debugging)"
+proxy = "Link to http or socks5 proxy you want to use. Tor works too"
