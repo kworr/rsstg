@@ -31,9 +31,8 @@ impl Core {
 		let tg = telegram_bot::Api::new(api_key);
 		let tg_cloned = tg.clone();
 
-		let proxy = settings.get_string("proxy")?;
 		let mut client = reqwest::Client::builder();
-		if !proxy.is_empty() {
+		if let Ok(proxy) = settings.get_string("proxy") {
 			let proxy = reqwest::Proxy::all(proxy)?;
 			client = client.proxy(proxy);
 		}
