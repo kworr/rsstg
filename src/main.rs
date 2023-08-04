@@ -3,7 +3,7 @@ mod core;
 
 use anyhow::Result;
 use async_std::task;
-use futures::StreamExt;
+use async_std::stream::StreamExt;
 
 fn main() -> Result<()> {
 	let settings = config::Config::builder()

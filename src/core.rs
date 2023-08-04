@@ -137,7 +137,7 @@ impl Core {
 			};
 			for (date, url) in posts.iter() {
 				let post_url: Cow<str> = match source.url_re {
-					Some(ref x) => sedregex::ReplaceCommand::new(x)?.execute(&source.url),
+					Some(ref x) => sedregex::ReplaceCommand::new(x)?.execute(url),
 					None => url.into(),
 				};
 				if let Some(exists) = sqlx::query!("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;",
@@ -265,6 +265,7 @@ impl Core {
 							if let Err(err) = clone.check(&source_id, owner, true).await {
 								if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None).await {
 									eprintln!("Check error: {}", err);
+									clone.disable(&source_id, owner).await.unwrap();
 								};
 							};
 						});
