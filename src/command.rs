@@ -93,8 +93,8 @@ pub async fn update(core: &Core, sender: telegram_bot::UserId, command: Vec<&str
 		},
 		None => None,
 	};
-	let channel_id = i64::from(core.tg.send(telegram_bot::GetChat::new(telegram_bot::ChatRef::ChannelUsername(channel.to_string()))).await?.id());
-	let chan_adm = core.tg.send(telegram_bot::GetChatAdministrators::new(telegram_bot::ChatRef::ChannelUsername(channel.to_string()))).await
+	let channel_id = i64::from(core.request(telegram_bot::GetChat::new(telegram_bot::ChatRef::ChannelUsername(channel.to_string()))).await?.id());
+	let chan_adm = core.request(telegram_bot::GetChatAdministrators::new(telegram_bot::ChatRef::ChannelUsername(channel.to_string()))).await
 		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
 	for admin in chan_adm {

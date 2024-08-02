@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use async_std::task;
 use chrono::DateTime;
+use lazy_static::lazy_static;
+use regex::Regex;
 use sqlx::postgres::PgPoolOptions;
 use std::{
 	borrow::Cow,
@@ -10,6 +12,10 @@ use std::{
 	},
 	sync::{Arc, Mutex},
 };
+
+lazy_static! {
+	static ref RE_DELAY: Regex = Regex::new(r"^Too Many Requests: retry after ([0-9]+)(,.*)?$").unwrap();
+}
 
 #[derive(Clone)]
 pub struct Core {
@@ -74,8 +80,31 @@ impl Core {
 	where S: Into<Cow<'a, str>> {
 		let mode = mode.unwrap_or(telegram_bot::types::ParseMode::Html);
 		let target = target.unwrap_or(self.owner_chat);
-		self.tg.send(telegram_bot::SendMessage::new(target, msg).parse_mode(mode)).await?;
+		self.request(telegram_bot::SendMessage::new(target, msg).parse_mode(mode)).await?;
 		Ok(())
+	}
+
+	pub async fn request<Req: telegram_bot::Request> (&self, req: Req) -> Result<<Req::Response as telegram_bot::ResponseType>::Type> {
+		loop {
+			let res = self.tg.send(&req).await;
+			match res {
+				Ok(_) => return Ok(res?),
+				Err(err) => {
+					dbg!(&err);
+					if let Some(caps) = RE_DELAY.captures(err.to_string().as_ref()) {
+						if let Some(delay) = caps.get(1) {
+							let delay = delay.as_str().parse::<u64>()?;
+							println!("Throttled, waiting {} senconds.", delay);
+							task::sleep(std::time::Duration::from_secs(delay)).await;
+						} else {
+							bail!("Can't read throttling message.");
+						}
+					} else {
+						return Err(err.into());
+					}
+				},
+			};
+		}
 	}
 
 	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<Cow<'_, str>>
@@ -146,14 +175,13 @@ impl Core {
 						if this_fetch.is_none() || *date > this_fetch.unwrap() {
 							this_fetch = Some(*date);
 						};
-						self.tg.send( match &source.iv_hash {
+						self.request( match &source.iv_hash {
 								Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", &post_url, hash)),
 								None => telegram_bot::SendMessage::new(destination, format!("{}", post_url)),
 							}.parse_mode(telegram_bot::types::ParseMode::Html)).await
 							.context("Can't post message:")?;
 						sqlx::query!("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);",
 							*id, date, &post_url).execute(&mut self.pool.acquire().await?).await?;
-						task::sleep(std::time::Duration::new(4, 0)).await;
 					};
 				};
 				posted += 1;
@@ -264,8 +292,8 @@ impl Core {
 						task::spawn(async move {
 							if let Err(err) = clone.check(&source_id, owner, true).await {
 								if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None).await {
-									eprintln!("Check error: {}", err);
-									clone.disable(&source_id, owner).await.unwrap();
+									dbg!("Check error: {}", err);
+									// clone.disable(&source_id, owner).await.unwrap();
 								};
 							};
 						});
@@ -286,9 +314,9 @@ impl Core {
 		let mut reply: Vec<Cow<str>> = vec![];
 		reply.push("Channels:".into());
 		let rows = sqlx::query!("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id",
-			owner).fetch_all(&mut self.pool.acquire().await?).await?;
+			owner).fetch_all(&mut *self.pool.acquire().await?).await?;
 		for row in rows.iter() {
-			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", row.source_id, row.channel,  
+			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", row.source_id, row.channel,
 				match row.enabled {
 					true  => "🔄 enabled",
 					false => "⛔ disabled",
