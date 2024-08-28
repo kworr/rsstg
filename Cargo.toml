@@ -1,24 +1,25 @@
 [package]
 name = "rsstg"
-version = "0.2.22"
+version = "0.2.23"
 authors = ["arcade"]
 edition = "2021"
 
 [dependencies]
-anyhow = "1"
-async-std = { version = "1", features = [ "tokio1" ] }
-atom_syndication = { version = "0.12", features = [ "with-serde" ] }
-chrono = "0.4"
-config = { version = "0.14", default-features = false, features = [ "toml" ] }
-futures = "0.3"
-futures-util = "0.3"
-lazy_static = "1"
-regex = "1"
-reqwest = { version = "0.12", features = [ "brotli", "socks", "deflate" ]}
-rss = { version = "2"}
-sedregex = "0.2"
-sqlx = { version = "0.6", features = [ "postgres", "tls", "runtime-async-std-rustls", "chrono" ] }
-telegram-bot = { git = "https://github.com/altiore/telegram-bot", rev = "f60fd77a69", features = [ "rustls" ], default-features = false }
+anyhow = "1.0.86"
+async-std = { version = "1.12.0", features = [ "attributes", "tokio1" ] }
+atom_syndication = { version = "0.12.4", features = [ "with-serde" ] }
+chrono = "0.4.38"
+config = { version = "0.14.0", default-features = false, features = [ "toml" ] }
+futures = "0.3.30"
+futures-util = "0.3.30"
+lazy_static = "1.5.0"
+regex = "1.10.6"
+reqwest = { version = "0.12.7", features = [ "brotli", "socks", "deflate" ]}
+rss = "2.0.9"
+sedregex = "0.2.5"
+sqlx = { version = "0.6.3", features = [ "postgres", "tls", "runtime-async-std-rustls", "chrono" ] }
+telegram-bot = { git = "https://github.com/kworr/telegram-bot", features = [ "rustls" ], default-features = false }
+thiserror = "1.0.63"
 
 [profile.release]
 lto = true

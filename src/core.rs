@@ -1,20 +1,32 @@
 use anyhow::{anyhow, bail, Context, Result};
 use async_std::task;
 use chrono::DateTime;
-use lazy_static::lazy_static;
-use regex::Regex;
 use sqlx::postgres::PgPoolOptions;
+use telegram_bot::{
+	_base::Error as TgrError,
+	Error as TgError,
+};
+use thiserror::Error;
+
 use std::{
 	borrow::Cow,
 	collections::{
 		BTreeMap,
 		HashSet,
 	},
-	sync::{Arc, Mutex},
+	num::TryFromIntError,
+	sync::{
+		Arc,
+		Mutex
+	},
 };
 
-lazy_static! {
-	static ref RE_DELAY: Regex = Regex::new(r"^Too Many Requests: retry after ([0-9]+)(,.*)?$").unwrap();
+#[derive(Error, Debug)]
+pub enum RssError {
+	#[error(transparent)]
+	Tg(#[from] TgError),
+	#[error(transparent)]
+	Int(#[from] TryFromIntError),
 }
 
 #[derive(Clone)]
@@ -84,23 +96,22 @@ impl Core {
 		Ok(())
 	}
 
-	pub async fn request<Req: telegram_bot::Request> (&self, req: Req) -> Result<<Req::Response as telegram_bot::ResponseType>::Type> {
+	pub async fn request<Req: telegram_bot::Request> (&self, req: Req) -> Result<<Req::Response as telegram_bot::ResponseType>::Type, RssError> {
 		loop {
 			let res = self.tg.send(&req).await;
 			match res {
 				Ok(_) => return Ok(res?),
 				Err(err) => {
-					dbg!(&err);
-					if let Some(caps) = RE_DELAY.captures(err.to_string().as_ref()) {
-						if let Some(delay) = caps.get(1) {
-							let delay = delay.as_str().parse::<u64>()?;
-							println!("Throttled, waiting {} senconds.", delay);
-							task::sleep(std::time::Duration::from_secs(delay)).await;
-						} else {
-							bail!("Can't read throttling message.");
-						}
-					} else {
-						return Err(err.into());
+					match &err {
+						TgError::Raw(TgrError::TelegramError { description: _, parameters: Some(params) }) => {
+							if let Some(delay) = params.retry_after {
+								println!("Throttled, waiting {} senconds.", delay);
+								task::sleep(std::time::Duration::from_secs(delay.try_into()?)).await;
+							} else {
+								return Err(err.into());
+							}
+						},
+						_ => return Err(err.into()),
 					}
 				},
 			};

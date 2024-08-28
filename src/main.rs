@@ -5,7 +5,8 @@ use anyhow::Result;
 use async_std::task;
 use async_std::stream::StreamExt;
 
-fn main() -> Result<()> {
+#[async_std::main]
+async fn main() -> Result<()> {
 	let settings = config::Config::builder()
 		.add_source(config::File::with_name("rsstg"))
 		.build()?;
@@ -36,9 +37,9 @@ fn main() -> Result<()> {
 async fn handle(update: telegram_bot::Update, core: &core::Core, mut _reply_to: &Option<telegram_bot::UserId>) -> Result<()> {
 	if let telegram_bot::UpdateKind::Message(message) = update.kind {
 		if let Some(from) = message.from {
-			if let telegram_bot::MessageKind::BotCommand { ref cmd_str, .. } = message.kind {
+			if let telegram_bot::MessageKind::Text{ ref data, .. } = message.kind {
 				let sender = from.id;
-				let words: Vec<&str> = cmd_str.split_whitespace().collect();
+				let words: Vec<&str> = data.split_whitespace().collect();
 				if let Err(err) = match words[0] {
 					"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(core, sender, words).await,
 					"/start" => command::start(core, sender).await,
