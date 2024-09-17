@@ -121,8 +121,9 @@ impl Core {
 	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
-
 		let mut posted: i32 = 0;
+		let mut conn = self.pool.acquire().await?;
+
 		let id = {
 			let mut set = self.sources.lock().unwrap();
 			match set.get(id) {
@@ -137,7 +138,7 @@ impl Core {
 		let count = Arc::strong_count(&id);
 		if count == 2 {
 			let source = sqlx::query!("select source_id, channel_id, url, iv_hash, owner, url_re from rsstg_source where source_id = $1 and owner = $2",
-				*id, owner).fetch_one(&mut self.pool.acquire().await?).await?;
+				*id, owner).fetch_one(&mut *conn).await?;
 			let destination = match real {
 				true => telegram_bot::UserId::new(source.channel_id),
 				false => telegram_bot::UserId::new(source.owner),
@@ -181,7 +182,7 @@ impl Core {
 					None => url.into(),
 				};
 				if let Some(exists) = sqlx::query!("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;",
-					&post_url, *id).fetch_one(&mut self.pool.acquire().await?).await?.exists {
+					&post_url, *id).fetch_one(&mut *conn).await?.exists {
 					if ! exists {
 						if this_fetch.is_none() || *date > this_fetch.unwrap() {
 							this_fetch = Some(*date);
@@ -192,7 +193,7 @@ impl Core {
 							}.parse_mode(telegram_bot::types::ParseMode::Html)).await
 							.context("Can't post message:")?;
 						sqlx::query!("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);",
-							*id, date, &post_url).execute(&mut self.pool.acquire().await?).await?;
+							*id, date, &post_url).execute(&mut *conn).await?;
 					};
 				};
 				posted += 1;
@@ -200,7 +201,7 @@ impl Core {
 			posts.clear();
 		};
 		sqlx::query!("update rsstg_source set last_scrape = now() where source_id = $1;",
-			*id).execute(&mut self.pool.acquire().await?).await?;
+			*id).execute(&mut *conn).await?;
 		Ok(format!("Posted: {}", &posted).into())
 	}
 
@@ -209,7 +210,7 @@ impl Core {
 		let owner = owner.into();
 
 		match sqlx::query!("delete from rsstg_source where source_id = $1 and owner = $2;",
-			source_id, owner).execute(&mut self.pool.acquire().await?).await?.rows_affected() {
+			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{} sources removed.", x).into()) },
 		}
@@ -220,7 +221,7 @@ impl Core {
 		let owner = owner.into();
 
 		match sqlx::query!("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;",
-			source_id, owner).execute(&mut self.pool.acquire().await?).await?.rows_affected() {
+			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{} posts purged.", x).into()) },
 		}
@@ -231,7 +232,7 @@ impl Core {
 		let owner = owner.into();
 
 		match sqlx::query!("update rsstg_source set enabled = true where source_id = $1 and owner = $2",
-			source_id, owner).execute(&mut self.pool.acquire().await?).await?.rows_affected() {
+			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			1 => { Ok("Source enabled.") },
 			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
@@ -243,7 +244,7 @@ impl Core {
 		let owner = owner.into();
 
 		match sqlx::query!("update rsstg_source set enabled = false where source_id = $1 and owner = $2",
-			source_id, owner).execute(&mut self.pool.acquire().await?).await?.rows_affected() {
+			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			1 => { Ok("Source disabled.") },
 			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
@@ -253,15 +254,16 @@ impl Core {
 	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
 	where S: Into<i64> {
 		let owner = owner.into();
+		let mut conn = self.pool.acquire().await?;
 
 		match match update {
 				Some(id) => {
 					sqlx::query!("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $5, channel = $6, url_re = $7 where source_id = $1",
-						id, channel_id, url, iv_hash, owner, channel, url_re).execute(&mut self.pool.acquire().await?).await
+						id, channel_id, url, iv_hash, owner, channel, url_re).execute(&mut *conn).await
 				},
 				None => {
 					sqlx::query!("insert into rsstg_source (channel_id, url, iv_hash, owner, channel, url_re) values ($1, $2, $3, $4, $5, $6)",
-						channel_id, url, iv_hash, owner, channel, url_re).execute(&mut self.pool.acquire().await?).await
+						channel_id, url, iv_hash, owner, channel, url_re).execute(&mut *conn).await
 				},
 			} {
 			Ok(_) => Ok(match update {
@@ -291,7 +293,7 @@ impl Core {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();
 		let mut queue = sqlx::query!(r#"select source_id, next_fetch as "next_fetch: DateTime<chrono::Local>", owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';"#)
-			.fetch_all(&mut self.pool.acquire().await?).await?;
+			.fetch_all(&mut *self.pool.acquire().await?).await?;
 		for row in queue.iter() {
 			if let Some(next_fetch) = row.next_fetch {
 				if next_fetch < now {
