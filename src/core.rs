@@ -164,13 +164,18 @@ impl Core {
 				},
 				Err(err) => match err {
 					rss::Error::InvalidStartTag => {
-						let feed = atom_syndication::Feed::read_from(&content[..])
-							.with_context(|| format!("Problem opening feed url:\n{}\n{}", &source.url, status))?;
-						for item in feed.entries() {
-							let date = item.published().unwrap();
-							let url = item.links()[0].href();
-							posts.insert(*date, url.to_string());
-						};
+						match atom_syndication::Feed::read_from(&content[..]) {
+							Ok(feed) => {
+								for item in feed.entries() {
+									let date = item.published().unwrap();
+									let url = item.links()[0].href();
+									posts.insert(*date, url.to_string());
+								};
+							},
+							Err(err) => {
+								bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n{:#?}\n", &source.url, err, status)
+							},
+						}
 					},
 					rss::Error::Eof => (),
 					_ => bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n{:#?}\n", &source.url, err, status)
