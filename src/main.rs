@@ -1,3 +1,8 @@
+//! This is telegram bot to fetch RSS/ATOM feeds and post results on public
+//! channels
+
+#![warn(missing_docs)]
+
 mod command;
 mod core;
 
