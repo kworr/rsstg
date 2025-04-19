@@ -1,9 +1,28 @@
-use anyhow::{bail, Context, Result};
 use crate::core::Core;
+
+use anyhow::{
+	bail,
+	Context,
+	Result
+};
 use lazy_static::lazy_static;
 use regex::Regex;
 use sedregex::ReplaceCommand;
 use std::borrow::Cow;
+use teloxide::{
+	Bot,
+	dispatching::dialogue::GetChatId,
+	payloads::GetChatAdministrators,
+	requests::{
+		Requester,
+		ResponseResult
+	},
+	types::{
+		Message,
+		UserId,
+	},
+	utils::command::BotCommands,
+};
 
 lazy_static! {
 	static ref RE_USERNAME: Regex = Regex::new(r"^@[a-zA-Z][a-zA-Z0-9_]+$").unwrap();
@@ -11,12 +30,28 @@ lazy_static! {
 	static ref RE_IV_HASH: Regex = Regex::new(r"^[a-f0-9]{14}$").unwrap();
 }
 
-pub async fn start(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
-	core.send("We are open. Probably. Visit [channel](https://t.me/rsstg_bot_help/3) for details.", Some(sender), None).await?;
+#[derive(BotCommands, Clone)]
+#[command(rename_rule = "lowercase", description = "Supported commands:")]
+enum Command {
+	#[command(description = "display this help.")]
+	Help,
+	#[command(description = "Does nothing.")]
+	Start,
+	#[commant(description = "List active subscriptions.")]
+	List,
+}
+
+pub async fn cmd_handler(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> {
+	match cmd {
+		Command::Help => bot.send_message(msg.chat.id, Command::descriptions().to_string()).await?,
+		Command::Start => bot.send_message(msg.chat.id,
+			"We are open. Probably. Visit [channel](https://t.me/rsstg_bot_help/3) for details.").await?,
+		Command::List => bot.send_message(msg.chat.id, core.list(msg.from).await?).await?,
+	};
 	Ok(())
 }
 
-pub async fn list(core: &Core, sender: telegram_bot::UserId) -> Result<()> {
+pub async fn list(core: &Core, sender: UserId) -> Result<()> {
 	core.send(core.list(sender).await?, Some(sender), Some(telegram_bot::types::ParseMode::MarkdownV2)).await?;
 	Ok(())
 }

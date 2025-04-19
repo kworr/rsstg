@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.2.26"
+version = "0.3.0"
 authors = ["arcade"]
 edition = "2021"
 
@@ -18,7 +18,8 @@ reqwest = { version = "0.12.7", features = [ "brotli", "socks", "deflate" ]}
 rss = "2.0.9"
 sedregex = "0.2.5"
 sqlx = { version = "0.8", features = [ "postgres", "runtime-async-std-rustls", "chrono", "macros" ], default-features = false }
-telegram-bot = { git = "https://github.com/kworr/telegram-bot", features = [ "rustls" ], default-features = false }
+#telegram-bot = { git = "https://github.com/kworr/telegram-bot", features = [ "rustls" ], default-features = false }
+teloxide = { version = "0.15.0", default-features = false, features = [ "ctrlc_handler", "macros", "rustls" ] }
 thiserror = "2.0.0"
 
 [profile.release]

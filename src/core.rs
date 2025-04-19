@@ -2,9 +2,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_std::task;
 use chrono::DateTime;
 use sqlx::postgres::PgPoolOptions;
-use telegram_bot::{
-	_base::Error as TgrError,
-	Error as TgError,
+use teloxide::{
+	Bot,
+	payloads::SendMessage,
+	requests::Requester,
+	types::{
+		Me,
+		UserId,
+	},
 };
 use thiserror::Error;
 
@@ -23,17 +28,17 @@ use std::{
 
 #[derive(Error, Debug)]
 pub enum RssError {
-	#[error(transparent)]
-	Tg(#[from] TgError),
+	// #[error(transparent)]
+	// Tg(#[from] TgError),
 	#[error(transparent)]
 	Int(#[from] TryFromIntError),
 }
 
 #[derive(Clone)]
 pub struct Core {
-	owner_chat: telegram_bot::UserId,
-	pub tg: telegram_bot::Api,
-	pub my: telegram_bot::User,
+	owner_chat: UserId,
+	pub tg: Bot,
+	pub my: Me,
 	pool: sqlx::Pool<sqlx::Postgres>,
 	sources: Arc<Mutex<HashSet<Arc<i32>>>>,
 	http_client: reqwest::Client,
@@ -41,9 +46,9 @@ pub struct Core {
 
 impl Core {
 	pub fn new(settings: config::Config) -> Result<Arc<Core>> {
-		let owner = settings.get_int("owner")?;
+		let owner: u64 = settings.get_int("owner")?.try_into()?;
 		let api_key = settings.get_string("api_key")?;
-		let tg = telegram_bot::Api::new(api_key);
+		let tg = Bot::new(api_key);
 		let tg_cloned = tg.clone();
 
 		let mut client = reqwest::Client::builder();
@@ -55,9 +60,9 @@ impl Core {
 		let core = Arc::new(Core {
 			tg,
 			my: task::block_on(async {
-				tg_cloned.send(telegram_bot::GetMe).await
+				tg_cloned.get_me().await
 			})?,
-			owner_chat: telegram_bot::UserId::new(owner),
+			owner_chat: UserId(owner),
 			pool: PgPoolOptions::new()
 				.max_connections(5)
 				.acquire_timeout(std::time::Duration::new(300, 0))
@@ -66,7 +71,7 @@ impl Core {
 			sources: Arc::new(Mutex::new(HashSet::new())),
 			http_client,
 		});
-		let clone = core.clone();
+		/* let clone = core.clone();
 		task::spawn(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
@@ -80,23 +85,28 @@ impl Core {
 				};
 				task::sleep(delay).await;
 			}
-		});
+		}); */
 		Ok(core)
 	}
 
-	pub fn stream(&self) -> telegram_bot::UpdatesStream {
-		self.tg.stream()
+	pub fn stream(&self) -> Result<()> {
+		let mut last_update: Option<i32> = None;
+		loop {
+			let updates = self.tg.get_updates(last_update, None, 300, Some(vec!["message"]));
+		}
+		Ok(())
 	}
 
+	/*
 	pub async fn send<'a, S>(&self, msg: S, target: Option<telegram_bot::UserId>, mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
 	where S: Into<Cow<'a, str>> {
 		let mode = mode.unwrap_or(telegram_bot::types::ParseMode::Html);
 		let target = target.unwrap_or(self.owner_chat);
 		self.request(telegram_bot::SendMessage::new(target, msg).parse_mode(mode)).await?;
 		Ok(())
-	}
+	} */
 
-	pub async fn request<Req: telegram_bot::Request> (&self, req: Req) -> Result<<Req::Response as telegram_bot::ResponseType>::Type, RssError> {
+	/* pub async fn request<Req: telegram_bot::Request> (&self, req: Req) -> Result<<Req::Response as telegram_bot::ResponseType>::Type, RssError> {
 		loop {
 			let res = self.tg.send(&req).await;
 			match res {
@@ -116,9 +126,9 @@ impl Core {
 				},
 			};
 		}
-	}
+	} */
 
-	pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<Cow<'_, str>>
+	/* pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
 		let mut posted: i32 = 0;
@@ -208,9 +218,9 @@ impl Core {
 		sqlx::query!("update rsstg_source set last_scrape = now() where source_id = $1;",
 			*id).execute(&mut *conn).await?;
 		Ok(format!("Posted: {}", &posted).into())
-	}
+	} */
 
-	pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
+	/* pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -219,9 +229,9 @@ impl Core {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{} sources removed.", x).into()) },
 		}
-	}
+	} */
 
-	pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
+	/* pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -230,9 +240,9 @@ impl Core {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{} posts purged.", x).into()) },
 		}
-	}
+	} */
 
-	pub async fn enable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
+	/* pub async fn enable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -242,9 +252,9 @@ impl Core {
 			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
-	}
+	} */
 
-	pub async fn disable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
+	/* pub async fn disable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
 	where S: Into<i64> {
 		let owner = owner.into();
 
@@ -254,9 +264,9 @@ impl Core {
 			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
-	}
+	} */
 
-	pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
+	/* pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
 	where S: Into<i64> {
 		let owner = owner.into();
 		let mut conn = self.pool.acquire().await?;
@@ -347,5 +357,5 @@ impl Core {
 			}
 		};
 		Ok(reply.join("\n"))
-	}
+	} */
 }

@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 			match stream.next().await {
 				Some(update) => {
 					if let Err(err) = handle(update?, &core, &reply_to).await {
-						core.send(&format!("🛑 {:?}", err), reply_to, None).await?;
+						core.send(&format!("🛑 {err:?}"), reply_to, None).await?;
 					};
 				},
 				None => {
