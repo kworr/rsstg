@@ -1,17 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
-use async_std::task;
-use chrono::DateTime;
-use sqlx::postgres::PgPoolOptions;
-use teloxide::{
-	Bot,
-	payloads::SendMessage,
-	requests::Requester,
-	types::{
-		Me,
-		UserId,
-	},
-};
-use thiserror::Error;
+use crate::command;
 
 use std::{
 	borrow::Cow,
@@ -26,6 +13,31 @@ use std::{
 	},
 };
 
+use anyhow::{
+	anyhow,
+	bail,
+	Result,
+};
+use async_std::task;
+use chrono::DateTime;
+use frankenstein::{
+	client_reqwest::Bot,
+	methods::{
+		GetUpdatesParams,
+		SendMessageParams
+	},
+	types::{
+		AllowedUpdate,
+		MessageEntityType,
+		User,
+	},
+	updates::UpdateContent,
+	AsyncTelegramApi,
+	ParseMode,
+};
+use sqlx::postgres::PgPoolOptions;
+use thiserror::Error;
+
 #[derive(Error, Debug)]
 pub enum RssError {
 	// #[error(transparent)]
@@ -36,20 +48,19 @@ pub enum RssError {
 
 #[derive(Clone)]
 pub struct Core {
-	owner_chat: UserId,
+	owner_chat: i64,
 	pub tg: Bot,
-	pub my: Me,
+	pub me: User,
 	pool: sqlx::Pool<sqlx::Postgres>,
 	sources: Arc<Mutex<HashSet<Arc<i32>>>>,
 	http_client: reqwest::Client,
 }
 
 impl Core {
-	pub fn new(settings: config::Config) -> Result<Arc<Core>> {
-		let owner: u64 = settings.get_int("owner")?.try_into()?;
+	pub async fn new(settings: config::Config) -> Result<Arc<Core>> {
+		let owner_chat = settings.get_int("owner")?;
 		let api_key = settings.get_string("api_key")?;
-		let tg = Bot::new(api_key);
-		let tg_cloned = tg.clone();
+		let tg = Bot::new(&api_key);
 
 		let mut client = reqwest::Client::builder();
 		if let Ok(proxy) = settings.get_string("proxy") {
@@ -57,12 +68,12 @@ impl Core {
 			client = client.proxy(proxy);
 		}
 		let http_client = client.build()?;
+		let me = tg.get_me().await?;
+		let me = me.result;
 		let core = Arc::new(Core {
 			tg,
-			my: task::block_on(async {
-				tg_cloned.get_me().await
-			})?,
-			owner_chat: UserId(owner),
+			me,
+			owner_chat,
 			pool: PgPoolOptions::new()
 				.max_connections(5)
 				.acquire_timeout(std::time::Duration::new(300, 0))
@@ -71,13 +82,13 @@ impl Core {
 			sources: Arc::new(Mutex::new(HashSet::new())),
 			http_client,
 		});
-		/* let clone = core.clone();
+		let clone = core.clone();
 		task::spawn(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
-						if let Err(err) = clone.send(format!("🛑 {:?}", err), None, None).await {
-							eprintln!("Autofetch error: {}", err);
+						if let Err(err) = clone.send(format!("🛑 {err:?}"), None, None).await {
+							eprintln!("Autofetch error: {err:?}");
 						};
 						std::time::Duration::from_secs(60)
 					},
@@ -85,52 +96,76 @@ impl Core {
 				};
 				task::sleep(delay).await;
 			}
-		}); */
+		});
 		Ok(core)
 	}
 
-	pub fn stream(&self) -> Result<()> {
-		let mut last_update: Option<i32> = None;
+	pub async fn stream(&self) -> Result<()> {
+		let mut offset: i64 = 0;
+		let mut params = GetUpdatesParams {
+			offset: None,
+			limit: Some(100),
+			timeout: Some(300),
+			allowed_updates: Some(vec![AllowedUpdate::Message]),
+		};
 		loop {
-			let updates = self.tg.get_updates(last_update, None, 300, Some(vec!["message"]));
+			let updates = self.tg.get_updates(&params).await?.result;
+			if updates.is_empty() {
+				offset = 0;
+				params.offset = None;
+				continue;
+			}
+			for update in updates {
+				if i64::from(update.update_id) >= offset {
+					offset = i64::from(update.update_id) + 1;
+					params.offset = Some(offset);
+				}
+				if let UpdateContent::Message(msg) = update.content {
+					if let Some(text) = msg.text {
+						if let Some(entities) = msg.entities {
+							let chars: Vec<u16> = text.encode_utf16().collect();
+							for entity in entities {
+								if entity.type_field == MessageEntityType::BotCommand && entity.offset != 0 {
+									bail!("commands should be at message start");
+								};
+								let cmd = String::from_utf16_lossy(&chars[entity.offset as usize..entity.length as usize]);
+								let words: Vec<&str> = text.split_whitespace().collect();
+								match cmd.as_ref() {
+									"/check" | "/clean" | "/enable" | "/delete" | "/disable" => { command::command(self, msg.chat.id, words).await? },
+									"/start" => { command::start(self, msg.chat.id).await?; },
+									"/list" => { command::list(self, msg.chat.id).await?; },
+									"/add" | "/update" => { command::update(self, msg.chat.id, words).await?; },
+									any => {
+										self.send(format!("\\#error\n```\nUnknown command: {any}\n```"),
+											Some(msg.chat.id),
+											Some(ParseMode::MarkdownV2)
+										).await?;
+									},
+								};
+							};
+						};
+					};
+				};
+			}
 		}
+	}
+
+	pub async fn send <S>(&self, msg: S, target: Option<i64>, mode: Option<ParseMode>) -> Result<()>
+	where S: Into<String> {
+		let msg = msg.into();
+
+		let mode = mode.unwrap_or(ParseMode::Html);
+		let target = target.unwrap_or(self.owner_chat);
+		let send = SendMessageParams::builder()
+			.chat_id(target)
+			.text(msg)
+			.parse_mode(mode)
+			.build();
+		self.tg.send_message(&send).await?;
 		Ok(())
 	}
 
-	/*
-	pub async fn send<'a, S>(&self, msg: S, target: Option<telegram_bot::UserId>, mode: Option<telegram_bot::types::ParseMode>) -> Result<()>
-	where S: Into<Cow<'a, str>> {
-		let mode = mode.unwrap_or(telegram_bot::types::ParseMode::Html);
-		let target = target.unwrap_or(self.owner_chat);
-		self.request(telegram_bot::SendMessage::new(target, msg).parse_mode(mode)).await?;
-		Ok(())
-	} */
-
-	/* pub async fn request<Req: telegram_bot::Request> (&self, req: Req) -> Result<<Req::Response as telegram_bot::ResponseType>::Type, RssError> {
-		loop {
-			let res = self.tg.send(&req).await;
-			match res {
-				Ok(_) => return Ok(res?),
-				Err(err) => {
-					match &err {
-						TgError::Raw(TgrError::TelegramError { description: _, parameters: Some(params) }) => {
-							if let Some(delay) = params.retry_after {
-								println!("Throttled, waiting {} senconds.", delay);
-								task::sleep(std::time::Duration::from_secs(delay.try_into()?)).await;
-							} else {
-								return Err(err.into());
-							}
-						},
-						_ => return Err(err.into()),
-					}
-				},
-			};
-		}
-	} */
-
-	/* pub async fn check<S>(&self, id: &i32, owner: S, real: bool) -> Result<Cow<'_, str>>
-	where S: Into<i64> {
-		let owner = owner.into();
+	pub async fn check (&self, id: &i32, owner: i64, real: bool) -> Result<Cow<'_, str>> {
 		let mut posted: i32 = 0;
 		let mut conn = self.pool.acquire().await?;
 
@@ -150,8 +185,8 @@ impl Core {
 			let source = sqlx::query!("select source_id, channel_id, url, iv_hash, owner, url_re from rsstg_source where source_id = $1 and owner = $2",
 				*id, owner).fetch_one(&mut *conn).await?;
 			let destination = match real {
-				true => telegram_bot::UserId::new(source.channel_id),
-				false => telegram_bot::UserId::new(source.owner),
+				true => source.channel_id,
+				false => source.owner,
 			};
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
@@ -183,12 +218,12 @@ impl Core {
 								};
 							},
 							Err(err) => {
-								bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n{:#?}\n", &source.url, err, status)
+								bail!("Unsupported or mangled content:\n{:?}\n{err:#?}\n{status:#?}\n", &source.url)
 							},
 						}
 					},
 					rss::Error::Eof => (),
-					_ => bail!("Unsupported or mangled content:\n{:?}\n{:#?}\n{:#?}\n", &source.url, err, status)
+					_ => bail!("Unsupported or mangled content:\n{:?}\n{err:#?}\n{status:#?}\n", &source.url)
 				}
 			};
 			for (date, url) in posts.iter() {
@@ -202,11 +237,10 @@ impl Core {
 						if this_fetch.is_none() || *date > this_fetch.unwrap() {
 							this_fetch = Some(*date);
 						};
-						self.request( match &source.iv_hash {
-								Some(hash) => telegram_bot::SendMessage::new(destination, format!("<a href=\"https://t.me/iv?url={}&rhash={}\"> </a>{0}", &post_url, hash)),
-								None => telegram_bot::SendMessage::new(destination, format!("{}", post_url)),
-							}.parse_mode(telegram_bot::types::ParseMode::Html)).await
-							.context("Can't post message:")?;
+						self.send( match &source.iv_hash {
+							Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
+							None => format!("{post_url}"),
+						}, Some(destination), Some(ParseMode::Html)).await?;
 						sqlx::query!("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);",
 							*id, date, &post_url).execute(&mut *conn).await?;
 					};
@@ -217,58 +251,44 @@ impl Core {
 		};
 		sqlx::query!("update rsstg_source set last_scrape = now() where source_id = $1;",
 			*id).execute(&mut *conn).await?;
-		Ok(format!("Posted: {}", &posted).into())
-	} */
+		Ok(format!("Posted: {posted}").into())
+	}
 
-	/* pub async fn delete<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
-	where S: Into<i64> {
-		let owner = owner.into();
-
+	pub async fn delete (&self, source_id: &i32, owner: i64) -> Result<Cow<'_, str>> {
 		match sqlx::query!("delete from rsstg_source where source_id = $1 and owner = $2;",
 			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{} sources removed.", x).into()) },
 		}
-	} */
+	}
 
-	/* pub async fn clean<S>(&self, source_id: &i32, owner: S) -> Result<Cow<'_, str>>
-	where S: Into<i64> {
-		let owner = owner.into();
-
+	pub async fn clean (&self, source_id: &i32, owner: i64) -> Result<Cow<'_, str>> {
 		match sqlx::query!("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;",
 			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
-			x => { Ok(format!("{} posts purged.", x).into()) },
+			x => { Ok(format!("{x} posts purged.").into()) },
 		}
-	} */
+	}
 
-	/* pub async fn enable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
-	where S: Into<i64> {
-		let owner = owner.into();
-
+	pub async fn enable (&self, source_id: &i32, owner: i64) -> Result<&str> {
 		match sqlx::query!("update rsstg_source set enabled = true where source_id = $1 and owner = $2",
 			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			1 => { Ok("Source enabled.") },
 			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
-	} */
+	}
 
-	/* pub async fn disable<S>(&self, source_id: &i32, owner: S) -> Result<&str>
-	where S: Into<i64> {
-		let owner = owner.into();
-
+	pub async fn disable (&self, source_id: &i32, owner: i64) -> Result<&str> {
 		match sqlx::query!("update rsstg_source set enabled = false where source_id = $1 and owner = $2",
 			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
 			1 => { Ok("Source disabled.") },
 			0 => { Ok("Source not found.") },
 			_ => { Err(anyhow!("Database error.")) },
 		}
-	} */
+	}
 
-	/* pub async fn update<S>(&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: S) -> Result<&str>
-	where S: Into<i64> {
-		let owner = owner.into();
+	pub async fn update (&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: i64) -> Result<&str> {
 		let mut conn = self.pool.acquire().await?;
 
 		match match update {
@@ -299,7 +319,7 @@ impl Core {
 				}
 			},
 			Err(err) => {
-				bail!("Sorry, unknown error:\n{:#?}\n", err);
+				bail!("Sorry, unknown error:\n{err:#?}\n");
 			},
 		}
 	}
@@ -314,13 +334,13 @@ impl Core {
 				if next_fetch < now {
 					if let (Some(owner), Some(source_id)) = (row.owner, row.source_id) {
 						let clone = Core {
-							owner_chat: telegram_bot::UserId::new(owner),
+							owner_chat: owner,
 							..self.clone()
 						};
 						task::spawn(async move {
 							if let Err(err) = clone.check(&source_id, owner, true).await {
-								if let Err(err) = clone.send(&format!("🛑 {:?}", err), None, None).await {
-									dbg!("Check error: {}", err);
+								if let Err(err) = clone.send(&format!("🛑 {err:?}"), None, None).await {
+									eprintln!("Check error: {err:?}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
 							};
@@ -335,10 +355,7 @@ impl Core {
 		Ok(delay.to_std()?)
 	}
 
-	pub async fn list<S>(&self, owner: S) -> Result<String>
-	where S: Into<i64> {
-		let owner = owner.into();
-
+	pub async fn list (&self, owner: i64) -> Result<String> {
 		let mut reply: Vec<Cow<str>> = vec![];
 		reply.push("Channels:".into());
 		let rows = sqlx::query!("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id",
@@ -350,12 +367,12 @@ impl Core {
 					false => "⛔ disabled",
 				}, row.url).into());
 			if let Some(hash) = &row.iv_hash {
-				reply.push(format!("IV: `{}`", hash).into());
+				reply.push(format!("IV: `{hash}`").into());
 			}
 			if let Some(re) = &row.url_re {
-				reply.push(format!("RE: `{}`", re).into());
+				reply.push(format!("RE: `{re}`").into());
 			}
 		};
 		Ok(reply.join("\n"))
-	} */
+	}
 }
