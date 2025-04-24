@@ -35,22 +35,24 @@ pub async fn start(core: &Core, chat_id: i64) -> Result<()> {
 	Ok(())
 }
 
-pub async fn list(core: &Core, sender: i64) -> Result<()> {
-	core.send(core.list(sender).await?, Some(sender), Some(ParseMode::MarkdownV2)).await?;
+pub async fn list(core: &mut Core, sender: i64) -> Result<()> {
+	let msg = core.list(sender).await?;
+	core.send(msg, Some(sender), Some(ParseMode::MarkdownV2)).await?;
 	Ok(())
 }
 
-pub async fn command(core: &Core, sender: i64, command: Vec<&str>) -> Result<()> {
+pub async fn command(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<()> {
+	let mut conn = core.db.begin().await?;
 	if command.len() >= 2 {
 		let msg: Cow<str> = match &command[1].parse::<i32>() {
 			Err(err) => format!("I need a number.\n{}", &err).into(),
 			Ok(number) => match command[0] {
 				"/check" => core.check(number, sender, false).await
-					.context("Channel check failed.")?,
-				"/clean" => core.clean(number, sender).await?,
-				"/enable" => core.enable(number, sender).await?.into(),
-				"/delete" => core.delete(number, sender).await?,
-				"/disable" => core.disable(number, sender).await?.into(),
+					.context("Channel check failed.")?.into(),
+				"/clean" => conn.clean(*number, sender).await?,
+				"/enable" => conn.enable(*number, sender).await?.into(),
+				"/delete" => conn.delete(*number, sender).await?,
+				"/disable" => conn.disable(*number, sender).await?.into(),
 				_ => bail!("Command {} not handled.", &command[0]),
 			},
 		};
@@ -61,7 +63,7 @@ pub async fn command(core: &Core, sender: i64, command: Vec<&str>) -> Result<()>
 	Ok(())
 }
 
-pub async fn update(core: &Core, sender: i64, command: Vec<&str>) -> Result<()> {
+pub async fn update(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<()> {
 	let mut source_id: Option<i32> = None;
 	let at_least = "Requires at least 3 parameters.";
 	let mut i_command = command.iter();
@@ -135,6 +137,7 @@ pub async fn update(core: &Core, sender: i64, command: Vec<&str>) -> Result<()> 
 	};
 	if ! me   { bail!("I need to be admin on that channel."); };
 	if ! user { bail!("You should be admin on that channel."); };
-	core.send(core.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(sender), None).await?;
+	let mut conn = core.db.begin().await?;
+	core.send(conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(sender), None).await?;
 	Ok(())
 }

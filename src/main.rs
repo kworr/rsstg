@@ -5,6 +5,7 @@
 
 mod command;
 mod core;
+mod sql;
 
 use anyhow::Result;
 
@@ -14,7 +15,7 @@ async fn main() -> Result<()> {
 		.add_source(config::File::with_name("rsstg"))
 		.build()?;
 
-	let core = core::Core::new(settings).await?;
+	let mut core = core::Core::new(settings).await?;
 
 	core.stream().await?;
 

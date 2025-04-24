@@ -1,4 +1,7 @@
-use crate::command;
+use crate::{
+	command,
+	sql::Db,
+};
 
 use std::{
 	borrow::Cow,
@@ -14,7 +17,6 @@ use std::{
 };
 
 use anyhow::{
-	anyhow,
 	bail,
 	Result,
 };
@@ -35,7 +37,6 @@ use frankenstein::{
 	AsyncTelegramApi,
 	ParseMode,
 };
-use sqlx::postgres::PgPoolOptions;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -51,13 +52,13 @@ pub struct Core {
 	owner_chat: i64,
 	pub tg: Bot,
 	pub me: User,
-	pool: sqlx::Pool<sqlx::Postgres>,
+	pub db: Db,
 	sources: Arc<Mutex<HashSet<Arc<i32>>>>,
 	http_client: reqwest::Client,
 }
 
 impl Core {
-	pub async fn new(settings: config::Config) -> Result<Arc<Core>> {
+	pub async fn new(settings: config::Config) -> Result<Core> {
 		let owner_chat = settings.get_int("owner")?;
 		let api_key = settings.get_string("api_key")?;
 		let tg = Bot::new(&api_key);
@@ -70,19 +71,15 @@ impl Core {
 		let http_client = client.build()?;
 		let me = tg.get_me().await?;
 		let me = me.result;
-		let core = Arc::new(Core {
+		let core = Core {
 			tg,
 			me,
 			owner_chat,
-			pool: PgPoolOptions::new()
-				.max_connections(5)
-				.acquire_timeout(std::time::Duration::new(300, 0))
-				.idle_timeout(std::time::Duration::new(60, 0))
-				.connect_lazy(&settings.get_string("pg")?)?,
+			db: Db::new(&settings.get_string("pg")?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
 			http_client,
-		});
-		let clone = core.clone();
+		};
+		let mut clone = core.clone();
 		task::spawn(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
@@ -100,7 +97,7 @@ impl Core {
 		Ok(core)
 	}
 
-	pub async fn stream(&self) -> Result<()> {
+	pub async fn stream(&mut self) -> Result<()> {
 		let mut offset: i64 = 0;
 		let mut params = GetUpdatesParams {
 			offset: None,
@@ -165,9 +162,9 @@ impl Core {
 		Ok(())
 	}
 
-	pub async fn check (&self, id: &i32, owner: i64, real: bool) -> Result<Cow<'_, str>> {
+	pub async fn check (&mut self, id: &i32, owner: i64, real: bool) -> Result<String> {
 		let mut posted: i32 = 0;
-		let mut conn = self.pool.acquire().await?;
+		let mut conn = self.db.begin().await?;
 
 		let id = {
 			let mut set = self.sources.lock().unwrap();
@@ -182,8 +179,7 @@ impl Core {
 		};
 		let count = Arc::strong_count(&id);
 		if count == 2 {
-			let source = sqlx::query!("select source_id, channel_id, url, iv_hash, owner, url_re from rsstg_source where source_id = $1 and owner = $2",
-				*id, owner).fetch_one(&mut *conn).await?;
+			let source = conn.get_source(*id, owner).await?;
 			let destination = match real {
 				true => source.channel_id,
 				false => source.owner,
@@ -231,8 +227,7 @@ impl Core {
 					Some(ref x) => sedregex::ReplaceCommand::new(x)?.execute(url),
 					None => url.into(),
 				};
-				if let Some(exists) = sqlx::query!("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;",
-					&post_url, *id).fetch_one(&mut *conn).await?.exists {
+				if let Some(exists) = conn.exists(&post_url, *id).await? {
 					if ! exists {
 						if this_fetch.is_none() || *date > this_fetch.unwrap() {
 							this_fetch = Some(*date);
@@ -241,99 +236,26 @@ impl Core {
 							Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
 							None => format!("{post_url}"),
 						}, Some(destination), Some(ParseMode::Html)).await?;
-						sqlx::query!("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);",
-							*id, date, &post_url).execute(&mut *conn).await?;
+						conn.add_post(*id, date, &post_url).await?;
 					};
 				};
 				posted += 1;
 			};
 			posts.clear();
 		};
-		sqlx::query!("update rsstg_source set last_scrape = now() where source_id = $1;",
-			*id).execute(&mut *conn).await?;
-		Ok(format!("Posted: {posted}").into())
+		conn.set_scrape(*id).await?;
+		Ok(format!("Posted: {posted}"))
 	}
 
-	pub async fn delete (&self, source_id: &i32, owner: i64) -> Result<Cow<'_, str>> {
-		match sqlx::query!("delete from rsstg_source where source_id = $1 and owner = $2;",
-			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
-			0 => { Ok("No data found found.".into()) },
-			x => { Ok(format!("{} sources removed.", x).into()) },
-		}
-	}
-
-	pub async fn clean (&self, source_id: &i32, owner: i64) -> Result<Cow<'_, str>> {
-		match sqlx::query!("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;",
-			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
-			0 => { Ok("No data found found.".into()) },
-			x => { Ok(format!("{x} posts purged.").into()) },
-		}
-	}
-
-	pub async fn enable (&self, source_id: &i32, owner: i64) -> Result<&str> {
-		match sqlx::query!("update rsstg_source set enabled = true where source_id = $1 and owner = $2",
-			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
-			1 => { Ok("Source enabled.") },
-			0 => { Ok("Source not found.") },
-			_ => { Err(anyhow!("Database error.")) },
-		}
-	}
-
-	pub async fn disable (&self, source_id: &i32, owner: i64) -> Result<&str> {
-		match sqlx::query!("update rsstg_source set enabled = false where source_id = $1 and owner = $2",
-			source_id, owner).execute(&mut *self.pool.acquire().await?).await?.rows_affected() {
-			1 => { Ok("Source disabled.") },
-			0 => { Ok("Source not found.") },
-			_ => { Err(anyhow!("Database error.")) },
-		}
-	}
-
-	pub async fn update (&self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: i64) -> Result<&str> {
-		let mut conn = self.pool.acquire().await?;
-
-		match match update {
-				Some(id) => {
-					sqlx::query!("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $5, channel = $6, url_re = $7 where source_id = $1",
-						id, channel_id, url, iv_hash, owner, channel, url_re).execute(&mut *conn).await
-				},
-				None => {
-					sqlx::query!("insert into rsstg_source (channel_id, url, iv_hash, owner, channel, url_re) values ($1, $2, $3, $4, $5, $6)",
-						channel_id, url, iv_hash, owner, channel, url_re).execute(&mut *conn).await
-				},
-			} {
-			Ok(_) => Ok(match update {
-				Some(_) => "Channel updated.",
-				None => "Channel added.",
-			}),
-			Err(sqlx::Error::Database(err)) => {
-				match err.downcast::<sqlx::postgres::PgDatabaseError>().routine() {
-					Some("_bt_check_unique", ) => {
-						Ok("Duplicate key.")
-					},
-					Some(_) => {
-						Ok("Database error.")
-					},
-					None => {
-						Ok("No database error extracted.")
-					},
-				}
-			},
-			Err(err) => {
-				bail!("Sorry, unknown error:\n{err:#?}\n");
-			},
-		}
-	}
-
-	async fn autofetch(&self) -> Result<std::time::Duration> {
+	async fn autofetch(&mut self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();
-		let mut queue = sqlx::query!(r#"select source_id, next_fetch as "next_fetch: DateTime<chrono::Local>", owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';"#)
-			.fetch_all(&mut *self.pool.acquire().await?).await?;
-		for row in queue.iter() {
+		let mut conn = self.db.begin().await?;
+		for row in conn.get_queue().await? {
 			if let Some(next_fetch) = row.next_fetch {
 				if next_fetch < now {
 					if let (Some(owner), Some(source_id)) = (row.owner, row.source_id) {
-						let clone = Core {
+						let mut clone = Core {
 							owner_chat: owner,
 							..self.clone()
 						};
@@ -351,16 +273,14 @@ impl Core {
 				}
 			}
 		};
-		queue.clear();
 		Ok(delay.to_std()?)
 	}
 
-	pub async fn list (&self, owner: i64) -> Result<String> {
+	pub async fn list (&mut self, owner: i64) -> Result<String> {
 		let mut reply: Vec<Cow<str>> = vec![];
 		reply.push("Channels:".into());
-		let rows = sqlx::query!("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id",
-			owner).fetch_all(&mut *self.pool.acquire().await?).await?;
-		for row in rows.iter() {
+		let mut conn = self.db.begin().await?;
+		for row in conn.get_list(owner).await? {
 			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", row.source_id, row.channel,
 				match row.enabled {
 					true  => "🔄 enabled",

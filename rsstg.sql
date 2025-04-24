@@ -10,7 +10,8 @@ create table rsstg_source (
 	last_scrape not null timestamptz default now(),
 	enabled boolean not null default true,
 	iv_hash text,
-	owner bigint not null);
+	owner bigint not null,
+	url_re text);
 create unique index rsstg_source__source_id on rsstg_source(source_id);
 create unique index rsstg_source__channel_id__owner on rsstg_source(channel_id, owner);
 create index rsstg_source__owner on rsstg_source(owner);
