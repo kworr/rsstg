@@ -180,6 +180,7 @@ impl Core {
 		let count = Arc::strong_count(&id);
 		if count == 2 {
 			let source = conn.get_source(*id, owner).await?;
+			conn.set_scrape(*id).await?;
 			let destination = match real {
 				true => source.channel_id,
 				false => source.owner,
@@ -243,7 +244,6 @@ impl Core {
 			};
 			posts.clear();
 		};
-		conn.set_scrape(*id).await?;
 		Ok(format!("Posted: {posted}"))
 	}
 
