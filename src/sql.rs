@@ -19,7 +19,7 @@ use sqlx::{
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct List {
-	pub source_id: i64,
+	pub source_id: i32,
 	pub channel: String,
 	pub enabled: bool,
 	pub url: String,
