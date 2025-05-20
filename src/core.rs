@@ -17,12 +17,16 @@ use std::{
 };
 
 use anyhow::{
+	anyhow,
 	bail,
 	Result,
 };
 use async_std::task;
 use chrono::DateTime;
 use frankenstein::{
+	AsyncTelegramApi,
+	Error as FrankError,
+	ParseMode,
 	client_reqwest::Bot,
 	methods::{
 		GetUpdatesParams,
@@ -34,8 +38,6 @@ use frankenstein::{
 		User,
 	},
 	updates::UpdateContent,
-	AsyncTelegramApi,
-	ParseMode,
 };
 use thiserror::Error;
 
@@ -50,6 +52,7 @@ pub enum RssError {
 #[derive(Clone)]
 pub struct Core {
 	owner_chat: i64,
+	max_delay: u16,
 	pub tg: Bot,
 	pub me: User,
 	pub db: Db,
@@ -78,6 +81,7 @@ impl Core {
 			db: Db::new(&settings.get_string("pg")?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
 			http_client,
+			max_delay: 60,
 		};
 		let mut clone = core.clone();
 		task::spawn(async move {
@@ -127,18 +131,21 @@ impl Core {
 								};
 								let cmd = String::from_utf16_lossy(&chars[entity.offset as usize..entity.length as usize]);
 								let words: Vec<&str> = text.split_whitespace().collect();
-								match cmd.as_ref() {
-									"/check" | "/clean" | "/enable" | "/delete" | "/disable" => { command::command(self, msg.chat.id, words).await? },
-									"/start" => { command::start(self, msg.chat.id).await?; },
-									"/list" => { command::list(self, msg.chat.id).await?; },
-									"/add" | "/update" => { command::update(self, msg.chat.id, words).await?; },
-									any => {
-										self.send(format!("\\#error\n```\nUnknown command: {any}\n```"),
-											Some(msg.chat.id),
-											Some(ParseMode::MarkdownV2)
-										).await?;
-									},
+								let res = match cmd.as_ref() {
+									"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, msg.chat.id, words).await,
+									"/start" => command::start(self, msg.chat.id).await,
+									"/list" => command::list(self, msg.chat.id).await,
+									"/add" | "/update" => command::update(self, msg.chat.id, words).await,
+									any => Err(anyhow!("Unknown command: {any}")),
 								};
+								if let Err(err) = res {
+									if let Err(err2) = self.send(format!("\\#error\n```\n{err:?}\n```"),
+										Some(msg.chat.id),
+										Some(ParseMode::MarkdownV2)
+									).await{
+										dbg!(err2);
+									};
+								}
 							};
 						};
 					};
@@ -158,7 +165,29 @@ impl Core {
 			.text(msg)
 			.parse_mode(mode)
 			.build();
-		self.tg.send_message(&send).await?;
+		loop {
+			match self.tg.send_message(&send).await {
+				Ok(_) => break,
+				Err(err) => match err {
+					FrankError::Api(ref resp) => {
+						if resp.error_code == 429 {
+							let mut my_delay = self.max_delay;
+							if let Some(params) = resp.parameters {
+								if let Some(delay) = params.retry_after {
+									if delay < my_delay {
+										my_delay = delay;
+									}
+								}
+							}
+							task::sleep(std::time::Duration::from_secs(my_delay.into())).await;
+						} else {
+							return Err(err.into());
+						}
+					},
+					_ => return Err(err.into()),
+				},
+			}
+		}
 		Ok(())
 	}
 
