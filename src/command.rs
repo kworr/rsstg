@@ -1,27 +1,22 @@
 use crate::core::Core;
 
-use std::borrow::Cow;
-
 use anyhow::{
+	anyhow,
 	bail,
 	Context,
-	Result
-};
-use frankenstein::{
-	methods::{
-		GetChatAdministratorsParams,
-		GetChatParams,
-	},
-	types::{
-		ChatId,
-		ChatMember,
-	},
-	AsyncTelegramApi,
-	ParseMode,
+	Result,
 };
 use lazy_static::lazy_static;
 use regex::Regex;
 use sedregex::ReplaceCommand;
+use tgbot::types::{
+	ChatMember,
+	ChatUsername,
+	GetChat,
+	GetChatAdministrators,
+	Message,
+	ParseMode::MarkdownV2,
+};
 
 lazy_static! {
 	static ref RE_USERNAME: Regex = Regex::new(r"^@[a-zA-Z][a-zA-Z0-9_]+$").unwrap();
@@ -29,46 +24,52 @@ lazy_static! {
 	static ref RE_IV_HASH: Regex = Regex::new(r"^[a-f0-9]{14}$").unwrap();
 }
 
-pub async fn start(core: &Core, chat_id: i64) -> Result<()> {
+pub async fn start(core: &Core, msg: &Message) -> Result<()> {
 	core.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
-		Some(chat_id), Some(ParseMode::MarkdownV2)).await?;
+		Some(msg.chat.get_id()), Some(MarkdownV2)).await?;
 	Ok(())
 }
 
-pub async fn list(core: &mut Core, sender: i64) -> Result<()> {
-	let msg = core.list(sender).await?;
-	core.send(msg, Some(sender), Some(ParseMode::MarkdownV2)).await?;
+pub async fn list(core: &Core, msg: &Message) -> Result<()> {
+	let sender = msg.sender.get_user_id()
+		.ok_or(anyhow!("Ignoring unreal users."))?;
+	let reply = core.list(sender).await?;
+	core.send(reply, Some(msg.chat.get_id()), Some(MarkdownV2)).await?;
 	Ok(())
 }
 
-pub async fn command(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<()> {
+pub async fn command (core: &Core, msg: &Message, command: &[String]) -> Result<()> {
 	let mut conn = core.db.begin().await?;
-	if command.len() >= 2 {
-		let msg: Cow<str> = match &command[1].parse::<i32>() {
+	let sender = msg.sender.get_user_id()
+		.ok_or(anyhow!("Ignoring unreal users."))?;
+	let reply = if command.len() >= 2 {
+		match command[1].parse::<i32>() {
 			Err(err) => format!("I need a number.\n{}", &err).into(),
-			Ok(number) => match command[0] {
-				"/check" => core.check(number, sender, false).await
+			Ok(number) => match &command[0][..] {
+				"/check" => core.check(number, false).await
 					.context("Channel check failed.")?.into(),
-				"/clean" => conn.clean(*number, sender).await?,
-				"/enable" => conn.enable(*number, sender).await?.into(),
-				"/delete" => conn.delete(*number, sender).await?,
-				"/disable" => conn.disable(*number, sender).await?.into(),
+				"/clean" => conn.clean(number, sender).await?,
+				"/enable" => conn.enable(number, sender).await?.into(),
+				"/delete" => conn.delete(number, sender).await?,
+				"/disable" => conn.disable(number, sender).await?.into(),
 				_ => bail!("Command {} not handled.", &command[0]),
 			},
-		};
-		core.send(msg, Some(sender), None).await?;
+		}
 	} else {
-		core.send("This command needs a number.", Some(sender), None).await?;
-	}
+		"This command needs a number.".into()
+	};
+	core.send(reply, Some(msg.chat.get_id()), None).await?;
 	Ok(())
 }
 
-pub async fn update(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<()> {
+pub async fn update (core: &Core, msg: &Message, command: &[String]) -> Result<()> {
+	let sender = msg.sender.get_user_id()
+		.ok_or(anyhow!("Ignoring unreal users."))?;
 	let mut source_id: Option<i32> = None;
 	let at_least = "Requires at least 3 parameters.";
 	let mut i_command = command.iter();
 	let first_word = i_command.next().context(at_least)?;
-	match *first_word {
+	match first_word.as_ref() {
 		"/update" => {
 			let next_word = i_command.next().context(at_least)?;
 			source_id = Some(next_word.parse::<i32>()
@@ -90,7 +91,7 @@ pub async fn update(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<
 	}
 	let iv_hash = match iv_hash {
 		Some(hash) => {
-			match *hash {
+			match hash.as_ref() {
 				"-" => None,
 				thing => {
 					if ! RE_IV_HASH.is_match(thing) {
@@ -104,7 +105,7 @@ pub async fn update(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<
 	};
 	let url_re = match url_re {
 		Some(re) => {
-			match *re {
+			match re.as_ref() {
 				"-" => None,
 				thing => {
 					let _url_rex = ReplaceCommand::new(thing).context("Regexp parsing error:")?;
@@ -114,10 +115,10 @@ pub async fn update(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<
 		},
 		None => None,
 	};
-	let chat_id = ChatId::String((*channel).into());
-	let channel_id = core.tg.get_chat(&GetChatParams { chat_id: chat_id.clone() }).await?.result.id;
-	let chan_adm = core.tg.get_chat_administrators(&GetChatAdministratorsParams { chat_id }).await
-		.context("Sorry, I have no access to that chat.")?.result;
+	let chat_id = ChatUsername::from(channel.clone());
+	let channel_id = core.tg.execute(GetChat::new(chat_id.clone())).await?.id;
+	let chan_adm = core.tg.execute(GetChatAdministrators::new(chat_id)).await
+		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
 	for admin in chan_adm {
 		let member_id = match admin {
@@ -125,19 +126,19 @@ pub async fn update(core: &mut Core, sender: i64, command: Vec<&str>) -> Result<
 			ChatMember::Administrator(member) => member.user.id,
 			ChatMember::Left(_)
 			| ChatMember::Kicked(_)
-			| ChatMember::Member(_)
+			| ChatMember::Member{..}
 			| ChatMember::Restricted(_) => continue,
-		} as i64;
-		if member_id == core.me.id as i64 {
-			me = true;
 		};
+		if member_id == core.me.id {
+			me = true;
+		}
 		if member_id == sender {
 			user = true;
-		};
+		}
 	};
 	if ! me   { bail!("I need to be admin on that channel."); };
 	if ! user { bail!("You should be admin on that channel."); };
 	let mut conn = core.db.begin().await?;
-	core.send(conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(sender), None).await?;
+	core.send(conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(msg.chat.get_id()), None).await?;
 	Ok(())
 }

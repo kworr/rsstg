@@ -1,4 +1,10 @@
-use std::borrow::Cow;
+use std::{
+	borrow::Cow,
+	sync::{
+		Arc,
+		Mutex,
+	},
+};
 
 use anyhow::{
 	Result,
@@ -10,7 +16,6 @@ use chrono::{
 	Local,
 };
 use sqlx::{
-	Pool,
 	Postgres,
 	Row,
 	postgres::PgPoolOptions,
@@ -45,7 +50,7 @@ pub struct Queue {
 
 #[derive(Clone)]
 pub struct Db {
-	pool: sqlx::Pool<sqlx::Postgres>,
+	pool: Arc<Mutex<Arc<sqlx::Pool<sqlx::Postgres>>>>,
 }
 
 pub struct Conn{
@@ -55,60 +60,64 @@ pub struct Conn{
 impl Db {
 	pub fn new (pguri: &str) -> Result<Db> {
 		Ok(Db{
-			pool: PgPoolOptions::new()
+			pool: Arc::new(Mutex::new(Arc::new(PgPoolOptions::new()
 				.max_connections(5)
 				.acquire_timeout(std::time::Duration::new(300, 0))
 				.idle_timeout(std::time::Duration::new(60, 0))
-				.connect_lazy(pguri)?,
+				.connect_lazy(pguri)?))),
 		})
 	}
 
-	pub async fn begin(&mut self) -> Result<Conn> {
-		Conn::new(&mut self.pool).await
+	pub async fn begin(&self) -> Result<Conn> {
+		let pool = self.pool.lock().unwrap().clone();
+		let conn = Conn::new(pool.acquire().await?).await?;
+		Ok(conn)
 	}
 }
 
 impl Conn {
-	pub async fn new (pool: &mut Pool<Postgres>) -> Result<Conn> {
-		let conn = pool.acquire().await?;
+	pub async fn new (conn: PoolConnection<Postgres>) -> Result<Conn> {
 		Ok(Conn{
 			conn,
 		})
 	}
 
-	pub async fn add_post (&mut self, id: i32, date: &DateTime<FixedOffset>, post_url: &str) -> Result<()> {
+	pub async fn add_post (&mut self, source_id: i32, date: &DateTime<FixedOffset>, post_url: &str) -> Result<()> {
 		sqlx::query("insert into rsstg_post (source_id, posted, url) values ($1, $2, $3);")
-			.bind(id)
+			.bind(source_id)
 			.bind(date)
 			.bind(post_url)
 			.execute(&mut *self.conn).await?;
 		Ok(())
 	}
 
-	pub async fn clean (&mut self, source_id: i32, owner: i64) -> Result<Cow<'_, str>> {
+	pub async fn clean <I> (&mut self, source_id: i32, owner: I) -> Result<Cow<'_, str>>
+	where I: Into<i64> {
 		match sqlx::query("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;")
 			.bind(source_id)
-			.bind(owner)
+			.bind(owner.into())
 			.execute(&mut *self.conn).await?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{x} posts purged.").into()) },
 		}
 	}
 
-	pub async fn delete (&mut self, source_id: i32, owner: i64) -> Result<Cow<'_, str>> {
+	pub async fn delete <I> (&mut self, source_id: i32, owner: I) -> Result<Cow<'_, str>>
+	where I: Into<i64> {
 		match sqlx::query("delete from rsstg_source where source_id = $1 and owner = $2;")
 			.bind(source_id)
-			.bind(owner)
+			.bind(owner.into())
 			.execute(&mut *self.conn).await?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{} sources removed.", x).into()) },
 		}
 	}
 
-	pub async fn disable (&mut self, source_id: i32, owner: i64) -> Result<&str> {
+	pub async fn disable <I> (&mut self, source_id: i32, owner: I) -> Result<&str>
+	where I: Into<i64> {
 		match sqlx::query("update rsstg_source set enabled = false where source_id = $1 and owner = $2")
 			.bind(source_id)
-			.bind(owner)
+			.bind(owner.into())
 			.execute(&mut *self.conn).await?.rows_affected() {
 			1 => { Ok("Source disabled.") },
 			0 => { Ok("Source not found.") },
@@ -116,10 +125,11 @@ impl Conn {
 		}
 	}
 
-	pub async fn enable (&mut self, source_id: i32, owner: i64) -> Result<&str> {
+	pub async fn enable <I> (&mut self, source_id: i32, owner: I) -> Result<&str>
+	where I: Into<i64> {
 		match sqlx::query("update rsstg_source set enabled = true where source_id = $1 and owner = $2")
 			.bind(source_id)
-			.bind(owner)
+			.bind(owner.into())
 			.execute(&mut *self.conn).await?.rows_affected() {
 			1 => { Ok("Source enabled.") },
 			0 => { Ok("Source not found.") },
@@ -127,10 +137,11 @@ impl Conn {
 		}
 	}
 
-	pub async fn exists (&mut self, post_url: &str, id: i32) -> Result<Option<bool>> {
+	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<Option<bool>>
+	where I: Into<i64> {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
 			.bind(post_url)
-			.bind(id)
+			.bind(id.into())
 			.fetch_one(&mut *self.conn).await?;
 		let exists: Option<bool> = row.try_get("exists")?;
 		Ok(exists)
@@ -142,29 +153,33 @@ impl Conn {
 		Ok(block)
 	}
 
-	pub async fn get_list (&mut self, owner: i64) -> Result<Vec<List>> {
+	pub async fn get_list <I> (&mut self, owner: I) -> Result<Vec<List>>
+	where I: Into<i64> {
 		let source: Vec<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
-			.bind(owner)
+			.bind(owner.into())
 			.fetch_all(&mut *self.conn).await?;
 		Ok(source)
 	}
 
-	pub async fn get_source (&mut self, id: i32, owner: i64) -> Result<Source> {
+	pub async fn get_source <I> (&mut self, id: i32, owner: I) -> Result<Source>
+	where I: Into<i64> {
 		let source: Source = sqlx::query_as("select channel_id, url, iv_hash, owner, url_re from rsstg_source where source_id = $1 and owner = $2")
 			.bind(id)
-			.bind(owner)
+			.bind(owner.into())
 			.fetch_one(&mut *self.conn).await?;
 		Ok(source)
 	}
 
-	pub async fn set_scrape (&mut self, id: i32) -> Result<()> {
+	pub async fn set_scrape <I> (&mut self, id: I) -> Result<()>
+	where I: Into<i64> {
 		sqlx::query("update rsstg_source set last_scrape = now() where source_id = $1;")
-			.bind(id)
+			.bind(id.into())
 			.execute(&mut *self.conn).await?;
 		Ok(())
 	}
 
-	pub async fn update (&mut self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: i64) -> Result<&str> {
+	pub async fn update <I> (&mut self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: I) -> Result<&str>
+	where I: Into<i64> {
 		match match update {
 				Some(id) => {
 					sqlx::query("update rsstg_source set channel_id = $2, url = $3, iv_hash = $4, owner = $5, channel = $6, url_re = $7 where source_id = $1")
@@ -177,7 +192,7 @@ impl Conn {
 				.bind(channel_id)
 				.bind(url)
 				.bind(iv_hash)
-				.bind(owner)
+				.bind(owner.into())
 				.bind(channel)
 				.bind(url_re)
 				.execute(&mut *self.conn).await

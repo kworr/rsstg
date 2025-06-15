@@ -8,6 +8,7 @@ mod core;
 mod sql;
 
 use anyhow::Result;
+use tgbot::handler::LongPoll;
 
 #[async_std::main]
 async fn main() -> Result<()> {
@@ -15,9 +16,9 @@ async fn main() -> Result<()> {
 		.add_source(config::File::with_name("rsstg"))
 		.build()?;
 
-	let mut core = core::Core::new(settings).await?;
+	let core = core::Core::new(settings).await?;
 
-	core.stream().await?;
+	LongPoll::new(core.tg.clone(), core).run().await;
 
 	Ok(())
 }
