@@ -1,14 +1,12 @@
-use std::{
-	borrow::Cow,
-	sync::{
-		Arc,
-		Mutex,
-	},
-};
+use std::borrow::Cow;
 
 use anyhow::{
 	Result,
 	bail,
+};
+use async_std::sync::{
+	Arc,
+	Mutex,
 };
 use chrono::{
 	DateTime,
@@ -50,7 +48,7 @@ pub struct Queue {
 
 #[derive(Clone)]
 pub struct Db {
-	pool: Arc<Mutex<Arc<sqlx::Pool<sqlx::Postgres>>>>,
+	pool: Arc<Mutex<sqlx::Pool<sqlx::Postgres>>>,
 }
 
 pub struct Conn{
@@ -60,16 +58,16 @@ pub struct Conn{
 impl Db {
 	pub fn new (pguri: &str) -> Result<Db> {
 		Ok(Db{
-			pool: Arc::new(Mutex::new(Arc::new(PgPoolOptions::new()
+			pool: Arc::new(Mutex::new(PgPoolOptions::new()
 				.max_connections(5)
 				.acquire_timeout(std::time::Duration::new(300, 0))
 				.idle_timeout(std::time::Duration::new(60, 0))
-				.connect_lazy(pguri)?))),
+				.connect_lazy(pguri)?)),
 		})
 	}
 
 	pub async fn begin(&self) -> Result<Conn> {
-		let pool = self.pool.lock().unwrap().clone();
+		let pool = self.pool.lock_arc().await;
 		let conn = Conn::new(pool.acquire().await?).await?;
 		Ok(conn)
 	}

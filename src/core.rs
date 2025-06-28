@@ -9,7 +9,6 @@ use std::{
 		BTreeMap,
 		HashSet,
 	},
-	num::TryFromIntError,
 	sync::{
 		Arc,
 		Mutex
@@ -39,15 +38,6 @@ use tgbot::{
 		UserPeerId,
 	},
 };
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum RssError {
-	// #[error(transparent)]
-	// Tg(#[from] TgError),
-	#[error(transparent)]
-	Int(#[from] TryFromIntError),
-}
 
 #[derive(Clone)]
 pub struct Core {
@@ -99,61 +89,6 @@ impl Core {
 		});
 		Ok(core)
 	}
-
-	/*
-	pub async fn stream(&self) -> Result<()> {
-		let mut offset: i64 = 0;
-		let mut params = GetUpdatesParams {
-			offset: None,
-			limit: Some(100),
-			timeout: Some(300),
-			allowed_updates: Some(vec![AllowedUpdate::Message]),
-		};
-		loop {
-			let updates = self.tg.get_updates(&params).await?.result;
-			if updates.is_empty() {
-				offset = 0;
-				params.offset = None;
-				continue;
-			}
-			for update in updates {
-				if i64::from(update.update_id) >= offset {
-					offset = i64::from(update.update_id) + 1;
-					params.offset = Some(offset);
-				}
-				if let UpdateContent::Message(msg) = update.content {
-					if let Some(text) = msg.text {
-						if let Some(entities) = msg.entities {
-							let chars: Vec<u16> = text.encode_utf16().collect();
-							for entity in entities {
-								if entity.type_field == MessageEntityType::BotCommand && entity.offset != 0 {
-									bail!("commands should be at message start");
-								};
-								let cmd = String::from_utf16_lossy(&chars[entity.offset as usize..entity.length as usize]);
-								let words: Vec<&str> = text.split_whitespace().collect();
-								let res = match cmd.as_ref() {
-									"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, msg.chat.id, words).await,
-									"/start" => command::start(self, msg.chat.id).await,
-									"/list" => command::list(self, msg.chat.id).await,
-									"/add" | "/update" => command::update(self, msg.chat.id, words).await,
-									any => Err(anyhow!("Unknown command: {any}")),
-								};
-								if let Err(err) = res {
-									if let Err(err2) = self.send(format!("\\#error\n```\n{err:?}\n```"),
-										Some(msg.chat.id),
-										Some(ParseMode::MarkdownV2)
-									).await{
-										dbg!(err2);
-									};
-								}
-							};
-						};
-					};
-				};
-			}
-		}
-	}
-	*/
 
 	pub async fn send <S>(&self, msg: S, target: Option<ChatPeerId>, mode: Option<ParseMode>) -> Result<Message>
 	where S: Into<String> {
@@ -311,11 +246,12 @@ impl UpdateHandler for Core {
 			if let Ok(cmd) = Command::try_from(msg) {
 				let msg = cmd.get_message();
 				let words = cmd.get_args();
-				let res = match cmd.get_name() {
-					"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, msg, words).await,
+				let command = cmd.get_name();
+				let res = match command {
+					"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
 					"/start" => command::start(self, msg).await,
 					"/list" => command::list(self, msg).await,
-					"/add" | "/update" => command::update(self, msg, words).await,
+					"/add" | "/update" => command::update(self, command, msg, words).await,
 					any => Err(anyhow!("Unknown command: {any}")),
 				};
 				if let Err(err) = res {
