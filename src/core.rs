@@ -22,6 +22,8 @@ use anyhow::{
 };
 use async_std::task;
 use chrono::DateTime;
+use lazy_static::lazy_static;
+use regex::Regex;
 use tgbot::{
 	api::Client,
 	handler::UpdateHandler,
@@ -38,6 +40,15 @@ use tgbot::{
 		UserPeerId,
 	},
 };
+
+lazy_static!{
+	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
+}
+
+/// Encodes special HTML entities to prevent them interfering with Telegram HTML
+pub fn encode (text: &str) -> Cow<'_, str> {
+	RE_SPECIAL.replace_all(text, "\\$1")
+}
 
 #[derive(Clone)]
 pub struct Core {
@@ -212,7 +223,7 @@ impl Core {
 						};
 						task::spawn(async move {
 							if let Err(err) = clone.check(source_id, true).await {
-								if let Err(err) = clone.send(&format!("{source}\n🛑 {err:?}"), None, None).await {
+								if let Err(err) = clone.send(&format!("{source}\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
 									eprintln!("Check error: {err:?}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
