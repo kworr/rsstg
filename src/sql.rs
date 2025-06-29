@@ -1,4 +1,7 @@
-use std::borrow::Cow;
+use std::{
+	borrow::Cow,
+	fmt,
+};
 
 use anyhow::{
 	Result,
@@ -28,6 +31,23 @@ pub struct List {
 	pub url: String,
 	pub iv_hash: Option<String>,
 	pub url_re: Option<String>,
+}
+
+impl fmt::Display for List {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+		write!(f, "\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", self.source_id, self.channel,
+			match self.enabled {
+				true  => "🔄 enabled",
+				false => "⛔ disabled",
+			}, self.url)?;
+		if let Some(iv_hash) = &self.iv_hash {
+			write!(f, "\nIV: `{iv_hash}`")?;
+		}
+		if let Some(url_re) = &self.url_re {
+			write!(f, "\nRE: `{url_re}`")?;
+		}
+		Ok(())
+	}
 }
 
 #[derive(sqlx::FromRow, Debug)]
@@ -156,6 +176,15 @@ impl Conn {
 		let source: Vec<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
 			.bind(owner.into())
 			.fetch_all(&mut *self.conn).await?;
+		Ok(source)
+	}
+
+	pub async fn get_one <I> (&mut self, owner: I, id: i32) -> Result<Option<List>>
+	where I: Into<i64> {
+		let source: Option<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 and source_id = $2")
+			.bind(owner.into())
+			.bind(id)
+			.fetch_optional(&mut *self.conn).await?;
 		Ok(source)
 	}
 

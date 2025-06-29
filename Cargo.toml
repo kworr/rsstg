@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.4.1"
+version = "0.4.2"
 authors = ["arcade"]
 edition = "2021"
 
@@ -10,7 +10,7 @@ async-std = { version = "1.12.0", features = [ "attributes", "tokio1" ] }
 atom_syndication = { version = "0.12.4", features = [ "with-serde" ] }
 chrono = "0.4.38"
 config = { version = "0.15", default-features = false, features = [ "toml" ] }
-tgbot = "0.37"
+tgbot = "0.38"
 futures = "0.3.30"
 futures-util = "0.3.30"
 lazy_static = "1.5.0"

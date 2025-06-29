@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "rsstg"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-std",
@@ -2730,9 +2730,9 @@ dependencies = [
 
 [[package]]
 name = "tgbot"
-version = "0.37.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5280aeee7c4600846513c67329304a100e6ab4295e6389e6194aa16b5e73595"
+checksum = "1f93a57a73ceda468ee27ccfa9ee21b35891d72ad0ea9c48ba24ca96621f25ca"
 dependencies = [
  "async-stream",
  "bytes",

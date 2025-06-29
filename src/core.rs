@@ -202,9 +202,17 @@ impl Core {
 							owner_chat: ChatPeerId::from(owner),
 							..self.clone()
 						};
+						let source = {
+							let mut conn = self.db.begin().await?;
+							match conn.get_one(owner, source_id).await {
+								Ok(Some(source)) => source.to_string(),
+								Ok(None) => "Source not found in database?".to_string(),
+								Err(err) => format!("Failed to fetch source data:\n{err}"),
+							}
+						};
 						task::spawn(async move {
 							if let Err(err) = clone.check(source_id, true).await {
-								if let Err(err) = clone.send(&format!("🛑 {err:?}"), None, None).await {
+								if let Err(err) = clone.send(&format!("{source}\n🛑 {err:?}"), None, None).await {
 									eprintln!("Check error: {err:?}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
@@ -220,23 +228,13 @@ impl Core {
 	}
 
 	pub async fn list (&self, owner: UserPeerId) -> Result<String> {
-		let mut reply: Vec<Cow<str>> = vec![];
+		let mut reply: Vec<String> = vec![];
 		reply.push("Channels:".into());
 		let mut conn = self.db.begin().await?;
 		for row in conn.get_list(owner).await? {
-			reply.push(format!("\n\\#️⃣ {} \\*️⃣ `{}` {}\n🔗 `{}`", row.source_id, row.channel,
-				match row.enabled {
-					true  => "🔄 enabled",
-					false => "⛔ disabled",
-				}, row.url).into());
-			if let Some(hash) = &row.iv_hash {
-				reply.push(format!("IV: `{hash}`").into());
-			}
-			if let Some(re) = &row.url_re {
-				reply.push(format!("RE: `{re}`").into());
-			}
+			reply.push(row.to_string());
 		};
-		Ok(reply.join("\n"))
+		Ok(reply.join("\n\n"))
 	}
 }
 
