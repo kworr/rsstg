@@ -9,10 +9,6 @@ use std::{
 		BTreeMap,
 		HashSet,
 	},
-	sync::{
-		Arc,
-		Mutex
-	},
 };
 
 use anyhow::{
@@ -20,7 +16,13 @@ use anyhow::{
 	bail,
 	Result,
 };
-use async_std::task;
+use async_std::{
+	task,
+	sync::{
+		Arc,
+		Mutex
+	},
+};
 use chrono::DateTime;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -118,7 +120,7 @@ impl Core {
 		let mut conn = self.db.begin().await?;
 
 		let id = {
-			let mut set = self.sources.lock().unwrap();
+			let mut set = self.sources.lock_arc().await;
 			match set.get(&id) {
 				Some(id) => id.clone(),
 				None => {
@@ -223,7 +225,7 @@ impl Core {
 						};
 						task::spawn(async move {
 							if let Err(err) = clone.check(source_id, true).await {
-								if let Err(err) = clone.send(&format!("{source}\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
+								if let Err(err) = clone.send(&format!("{source}\n\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
 									eprintln!("Check error: {err:?}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
