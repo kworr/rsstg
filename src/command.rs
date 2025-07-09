@@ -1,14 +1,13 @@
 use crate::core::Core;
 
-use anyhow::{
-	anyhow,
-	bail,
-	Context,
-	Result,
-};
 use lazy_static::lazy_static;
 use regex::Regex;
 use sedregex::ReplaceCommand;
+use stacked_errors::{
+	Result,
+	StackableErr,
+	bail,
+};
 use tgbot::types::{
 	ChatMember,
 	ChatUsername,
@@ -26,45 +25,45 @@ lazy_static! {
 
 pub async fn start (core: &Core, msg: &Message) -> Result<()> {
 	core.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
-		Some(msg.chat.get_id()), Some(MarkdownV2)).await?;
+		Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
 	Ok(())
 }
 
 pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
-		.ok_or(anyhow!("Ignoring unreal users."))?;
-	let reply = core.list(sender).await?;
-	core.send(reply, Some(msg.chat.get_id()), Some(MarkdownV2)).await?;
+		.stack_err("Ignoring unreal users.")?;
+	let reply = core.list(sender).await.stack()?;
+	core.send(reply, Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
 	Ok(())
 }
 
 pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
-	let mut conn = core.db.begin().await?;
+	let mut conn = core.db.begin().await.stack()?;
 	let sender = msg.sender.get_user_id()
-		.ok_or(anyhow!("Ignoring unreal users."))?;
+		.stack_err("Ignoring unreal users.")?;
 	let reply = if words.len() == 1 {
 		match words[0].parse::<i32>() {
 			Err(err) => format!("I need a number.\n{}", &err).into(),
 			Ok(number) => match command {
 				"/check" => core.check(number, false).await
 					.context("Channel check failed.")?.into(),
-				"/clean" => conn.clean(number, sender).await?,
-				"/enable" => conn.enable(number, sender).await?.into(),
-				"/delete" => conn.delete(number, sender).await?,
-				"/disable" => conn.disable(number, sender).await?.into(),
+				"/clean" => conn.clean(number, sender).await.stack()?,
+				"/enable" => conn.enable(number, sender).await.stack()?.into(),
+				"/delete" => conn.delete(number, sender).await.stack()?,
+				"/disable" => conn.disable(number, sender).await.stack()?.into(),
 				_ => bail!("Command {command} {words:?} not handled."),
 			},
 		}
 	} else {
 		"This command needs exacly one number.".into()
 	};
-	core.send(reply, Some(msg.chat.get_id()), None).await?;
+	core.send(reply, Some(msg.chat.get_id()), None).await.stack()?;
 	Ok(())
 }
 
 pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let sender = msg.sender.get_user_id()
-		.ok_or(anyhow!("Ignoring unreal users."))?;
+		.stack_err("Ignoring unreal users.")?;
 	let mut source_id: Option<i32> = None;
 	let at_least = "Requires at least 3 parameters.";
 	let mut i_words = words.iter();
@@ -126,7 +125,7 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 		None => None,
 	};
 	let chat_id = ChatUsername::from(channel.as_ref());
-	let channel_id = core.tg.execute(GetChat::new(chat_id.clone())).await?.id;
+	let channel_id = core.tg.execute(GetChat::new(chat_id.clone())).await.stack_err("gettting GetChat")?.id;
 	let chan_adm = core.tg.execute(GetChatAdministrators::new(chat_id)).await
 		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
@@ -148,7 +147,7 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 	};
 	if ! me   { bail!("I need to be admin on that channel."); };
 	if ! user { bail!("You should be admin on that channel."); };
-	let mut conn = core.db.begin().await?;
-	core.send(conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await?, Some(msg.chat.get_id()), None).await?;
+	let mut conn = core.db.begin().await.stack()?;
+	core.send(conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await.stack()?, Some(msg.chat.get_id()), None).await.stack()?;
 	Ok(())
 }

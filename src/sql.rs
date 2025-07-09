@@ -3,10 +3,6 @@ use std::{
 	fmt,
 };
 
-use anyhow::{
-	Result,
-	bail,
-};
 use async_std::sync::{
 	Arc,
 	Mutex,
@@ -22,6 +18,11 @@ use sqlx::{
 	postgres::PgPoolOptions,
 	pool::PoolConnection,
 };
+use stacked_errors::{
+	Result,
+	StackableErr,
+	bail,
+};
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct List {
@@ -34,7 +35,7 @@ pub struct List {
 }
 
 impl fmt::Display for List {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
 		write!(f, "#{} \\*️⃣ `{}` {}\n🔗 `{}`", self.source_id, self.channel,
 			match self.enabled {
 				true  => "🔄 enabled",
@@ -78,13 +79,14 @@ impl Db {
 				.max_connections(5)
 				.acquire_timeout(std::time::Duration::new(300, 0))
 				.idle_timeout(std::time::Duration::new(60, 0))
-				.connect_lazy(pguri)?)),
+				.connect_lazy(pguri)
+				.stack()?)),
 		))
 	}
 
 	pub async fn begin(&self) -> Result<Conn> {
 		let pool = self.0.lock_arc().await;
-		let conn = Conn ( pool.acquire().await? );
+		let conn = Conn ( pool.acquire().await.stack()? );
 		Ok(conn)
 	}
 }
@@ -99,7 +101,7 @@ impl Conn {
 			.bind(source_id)
 			.bind(date)
 			.bind(post_url)
-			.execute(&mut *self.0).await?;
+			.execute(&mut *self.0).await.stack()?;
 		Ok(())
 	}
 
@@ -108,7 +110,7 @@ impl Conn {
 		match sqlx::query("delete from rsstg_post p using rsstg_source s where p.source_id = $1 and owner = $2 and p.source_id = s.source_id;")
 			.bind(source_id)
 			.bind(owner.into())
-			.execute(&mut *self.0).await?.rows_affected() {
+			.execute(&mut *self.0).await.stack()?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
 			x => { Ok(format!("{x} posts purged.").into()) },
 		}
@@ -119,9 +121,9 @@ impl Conn {
 		match sqlx::query("delete from rsstg_source where source_id = $1 and owner = $2;")
 			.bind(source_id)
 			.bind(owner.into())
-			.execute(&mut *self.0).await?.rows_affected() {
+			.execute(&mut *self.0).await.stack()?.rows_affected() {
 			0 => { Ok("No data found found.".into()) },
-			x => { Ok(format!("{} sources removed.", x).into()) },
+			x => { Ok(format!("{x} sources removed.").into()) },
 		}
 	}
 
@@ -130,7 +132,7 @@ impl Conn {
 		match sqlx::query("update rsstg_source set enabled = false where source_id = $1 and owner = $2")
 			.bind(source_id)
 			.bind(owner.into())
-			.execute(&mut *self.0).await?.rows_affected() {
+			.execute(&mut *self.0).await.stack()?.rows_affected() {
 			1 => { Ok("Source disabled.") },
 			0 => { Ok("Source not found.") },
 			_ => { bail!("Database error.") },
@@ -142,7 +144,7 @@ impl Conn {
 		match sqlx::query("update rsstg_source set enabled = true where source_id = $1 and owner = $2")
 			.bind(source_id)
 			.bind(owner.into())
-			.execute(&mut *self.0).await?.rows_affected() {
+			.execute(&mut *self.0).await.stack()?.rows_affected() {
 			1 => { Ok("Source enabled.") },
 			0 => { Ok("Source not found.") },
 			_ => { bail!("Database error.") },
@@ -154,14 +156,14 @@ impl Conn {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
 			.bind(post_url)
 			.bind(id.into())
-			.fetch_one(&mut *self.0).await?;
-		let exists: Option<bool> = row.try_get("exists")?;
+			.fetch_one(&mut *self.0).await.stack()?;
+		let exists: Option<bool> = row.try_get("exists").stack()?;
 		Ok(exists)
 	}
 
 	pub async fn get_queue (&mut self) -> Result<Vec<Queue>> {
 		let block: Vec<Queue> = sqlx::query_as("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
-			.fetch_all(&mut *self.0).await?;
+			.fetch_all(&mut *self.0).await.stack()?;
 		Ok(block)
 	}
 
@@ -169,7 +171,7 @@ impl Conn {
 	where I: Into<i64> {
 		let source: Vec<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
 			.bind(owner.into())
-			.fetch_all(&mut *self.0).await?;
+			.fetch_all(&mut *self.0).await.stack()?;
 		Ok(source)
 	}
 
@@ -178,7 +180,7 @@ impl Conn {
 		let source: Option<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 and source_id = $2")
 			.bind(owner.into())
 			.bind(id)
-			.fetch_optional(&mut *self.0).await?;
+			.fetch_optional(&mut *self.0).await.stack()?;
 		Ok(source)
 	}
 
@@ -187,7 +189,7 @@ impl Conn {
 		let source: Source = sqlx::query_as("select channel_id, url, iv_hash, owner, url_re from rsstg_source where source_id = $1 and owner = $2")
 			.bind(id)
 			.bind(owner.into())
-			.fetch_one(&mut *self.0).await?;
+			.fetch_one(&mut *self.0).await.stack()?;
 		Ok(source)
 	}
 
@@ -195,7 +197,7 @@ impl Conn {
 	where I: Into<i64> {
 		sqlx::query("update rsstg_source set last_scrape = now() where source_id = $1;")
 			.bind(id.into())
-			.execute(&mut *self.0).await?;
+			.execute(&mut *self.0).await.stack()?;
 		Ok(())
 	}
 

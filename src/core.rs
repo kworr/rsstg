@@ -11,11 +11,6 @@ use std::{
 	},
 };
 
-use anyhow::{
-	anyhow,
-	bail,
-	Result,
-};
 use async_std::{
 	task,
 	sync::{
@@ -42,6 +37,12 @@ use tgbot::{
 		UserPeerId,
 	},
 };
+use stacked_errors::{
+	Result,
+	StackableErr,
+	anyhow,
+	bail,
+};
 
 lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
@@ -65,22 +66,22 @@ pub struct Core {
 
 impl Core {
 	pub async fn new(settings: config::Config) -> Result<Core> {
-		let owner_chat = ChatPeerId::from(settings.get_int("owner")?);
-		let api_key = settings.get_string("api_key")?;
-		let tg = Client::new(&api_key)?;
+		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
+		let api_key = settings.get_string("api_key").stack()?;
+		let tg = Client::new(&api_key).stack()?;
 
 		let mut client = reqwest::Client::builder();
 		if let Ok(proxy) = settings.get_string("proxy") {
-			let proxy = reqwest::Proxy::all(proxy)?;
+			let proxy = reqwest::Proxy::all(proxy).stack()?;
 			client = client.proxy(proxy);
 		}
-		let http_client = client.build()?;
-		let me = tg.execute(GetBot).await?;
+		let http_client = client.build().stack()?;
+		let me = tg.execute(GetBot).await.stack()?;
 		let core = Core {
 			tg,
 			me,
 			owner_chat,
-			db: Db::new(&settings.get_string("pg")?)?,
+			db: Db::new(&settings.get_string("pg").stack()?)?,
 			sources: Arc::new(Mutex::new(HashSet::new())),
 			http_client,
 			// max_delay: 60,
@@ -109,15 +110,15 @@ impl Core {
 
 		let mode = mode.unwrap_or(ParseMode::Html);
 		let target = target.unwrap_or(self.owner_chat);
-		Ok(self.tg.execute(
+		self.tg.execute(
 			SendMessage::new(target, msg)
 				.with_parse_mode(mode)
-		).await?)
+		).await.stack()
 	}
 
 	pub async fn check (&self, id: i32, real: bool) -> Result<String> {
 		let mut posted: i32 = 0;
-		let mut conn = self.db.begin().await?;
+		let mut conn = self.db.begin().await.stack()?;
 
 		let id = {
 			let mut set = self.sources.lock_arc().await;
@@ -132,8 +133,8 @@ impl Core {
 		};
 		let count = Arc::strong_count(&id);
 		if count == 2 {
-			let source = conn.get_source(*id, self.owner_chat).await?;
-			conn.set_scrape(*id).await?;
+			let source = conn.get_source(*id, self.owner_chat).await.stack()?;
+			conn.set_scrape(*id).await.stack()?;
 			let destination = ChatPeerId::from(match real {
 				true => source.channel_id,
 				false => source.owner,
@@ -141,9 +142,9 @@ impl Core {
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
 
-			let response = self.http_client.get(&source.url).send().await?;
+			let response = self.http_client.get(&source.url).send().await.stack()?;
 			let status = response.status();
-			let content = response.bytes().await?;
+			let content = response.bytes().await.stack()?;
 			match rss::Channel::read_from(&content[..]) {
 				Ok(feed) => {
 					for item in feed.items() {
@@ -151,7 +152,7 @@ impl Core {
 							let date = match item.pub_date() {
 								Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
 								None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
-							}?;
+							}.stack()?;
 							let url = link;
 							posts.insert(date, url.to_string());
 						}
@@ -178,10 +179,10 @@ impl Core {
 			};
 			for (date, url) in posts.iter() {
 				let post_url: Cow<str> = match source.url_re {
-					Some(ref x) => sedregex::ReplaceCommand::new(x)?.execute(url),
+					Some(ref x) => sedregex::ReplaceCommand::new(x).stack()?.execute(url),
 					None => url.into(),
 				};
-				if let Some(exists) = conn.exists(&post_url, *id).await? {
+				if let Some(exists) = conn.exists(&post_url, *id).await.stack()? {
 					if ! exists {
 						if this_fetch.is_none() || *date > this_fetch.unwrap() {
 							this_fetch = Some(*date);
@@ -189,8 +190,8 @@ impl Core {
 						self.send( match &source.iv_hash {
 							Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
 							None => format!("{post_url}"),
-						}, Some(destination), Some(ParseMode::Html)).await?;
-						conn.add_post(*id, date, &post_url).await?;
+						}, Some(destination), Some(ParseMode::Html)).await.stack()?;
+						conn.add_post(*id, date, &post_url).await.stack()?;
 					};
 				};
 				posted += 1;
@@ -204,8 +205,8 @@ impl Core {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();
 		let queue = {
-			let mut conn = self.db.begin().await?;
-			conn.get_queue().await?
+			let mut conn = self.db.begin().await.stack()?;
+			conn.get_queue().await.stack()?
 		};
 		for row in queue {
 			if let Some(next_fetch) = row.next_fetch {
@@ -216,10 +217,10 @@ impl Core {
 							..self.clone()
 						};
 						let source = {
-							let mut conn = self.db.begin().await?;
+							let mut conn = self.db.begin().await.stack()?;
 							match conn.get_one(owner, source_id).await {
 								Ok(Some(source)) => source.to_string(),
-								Ok(None) => "Source not found in database?".to_string(),
+								Ok(None) => "Source not found in database.stack()?".to_string(),
 								Err(err) => format!("Failed to fetch source data:\n{err}"),
 							}
 						};
@@ -237,14 +238,14 @@ impl Core {
 				}
 			}
 		};
-		Ok(delay.to_std()?)
+		delay.to_std().stack()
 	}
 
 	pub async fn list (&self, owner: UserPeerId) -> Result<String> {
 		let mut reply: Vec<String> = vec![];
 		reply.push("Channels:".into());
-		let mut conn = self.db.begin().await?;
-		for row in conn.get_list(owner).await? {
+		let mut conn = self.db.begin().await.stack()?;
+		for row in conn.get_list(owner).await.stack()? {
 			reply.push(row.to_string());
 		};
 		Ok(reply.join("\n\n"))

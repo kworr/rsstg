@@ -7,16 +7,20 @@ mod command;
 mod core;
 mod sql;
 
-use anyhow::Result;
+use stacked_errors::{
+	Result,
+	StackableErr,
+};
 use tgbot::handler::LongPoll;
 
 #[async_std::main]
 async fn main() -> Result<()> {
 	let settings = config::Config::builder()
 		.add_source(config::File::with_name("rsstg"))
-		.build()?;
+		.build()
+		.stack()?;
 
-	let core = core::Core::new(settings).await?;
+	let core = core::Core::new(settings).await.stack()?;
 
 	LongPoll::new(core.tg.clone(), core).run().await;
 
