@@ -91,7 +91,7 @@ impl Core {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
-						if let Err(err) = clone.send(format!("🛑 {err:?}"), None, None).await {
+						if let Err(err) = clone.send(format!("🛑 {err}"), None, None).await {
 							eprintln!("Autofetch error: {err:?}");
 						};
 						std::time::Duration::from_secs(60)
@@ -169,12 +169,12 @@ impl Core {
 								};
 							},
 							Err(err) => {
-								bail!("Unsupported or mangled content:\n{:?}\n{err:#?}\n{status:#?}\n", &source.url)
+								bail!("Unsupported or mangled content:\n{:?}\n{err}\n{status:#?}\n", &source.url)
 							},
 						}
 					},
 					rss::Error::Eof => (),
-					_ => bail!("Unsupported or mangled content:\n{:?}\n{err:#?}\n{status:#?}\n", &source.url)
+					_ => bail!("Unsupported or mangled content:\n{:?}\n{err}\n{status:#?}\n", &source.url)
 				}
 			};
 			for (date, url) in posts.iter() {
@@ -267,7 +267,7 @@ impl UpdateHandler for Core {
 					any => Err(anyhow!("Unknown command: {any}")),
 				};
 				if let Err(err) = res {
-					if let Err(err2) = self.send(format!("\\#error\n```\n{err:?}\n```"),
+					if let Err(err2) = self.send(format!("\\#error\n```\n{err}\n```"),
 						Some(msg.chat.get_id()),
 						Some(ParseMode::MarkdownV2)
 					).await{
