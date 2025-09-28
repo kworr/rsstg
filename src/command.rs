@@ -45,7 +45,7 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 		match words[0].parse::<i32>() {
 			Err(err) => format!("I need a number.\n{}", &err).into(),
 			Ok(number) => match command {
-				"/check" => core.check(number, false).await
+				"/check" => core.check(number, false, None).await
 					.context("Channel check failed.")?.into(),
 				"/clean" => conn.clean(number, sender).await.stack()?,
 				"/enable" => conn.enable(number, sender).await.stack()?.into(),

@@ -18,9 +18,17 @@ use async_std::{
 		Mutex
 	},
 };
-use chrono::DateTime;
+use chrono::{
+	DateTime,
+	Local,
+};
 use lazy_static::lazy_static;
 use regex::Regex;
+use reqwest::header::{
+	CACHE_CONTROL,
+	EXPIRES,
+	LAST_MODIFIED
+};
 use tgbot::{
 	api::Client,
 	handler::UpdateHandler,
@@ -116,7 +124,7 @@ impl Core {
 		).await.stack()
 	}
 
-	pub async fn check (&self, id: i32, real: bool) -> Result<String> {
+	pub async fn check (&self, id: i32, real: bool, last_scrape: Option<DateTime<Local>>) -> Result<String> {
 		let mut posted: i32 = 0;
 		let mut conn = self.db.begin().await.stack()?;
 
@@ -142,7 +150,19 @@ impl Core {
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
 			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
 
-			let response = self.http_client.get(&source.url).send().await.stack()?;
+			let mut builder = self.http_client.get(&source.url);
+			if let Some(last_scrape) = last_scrape {
+				builder = builder.header(LAST_MODIFIED, last_scrape.to_rfc2822());
+			};
+			let response = builder.send().await.stack()?;
+			{
+				let headers = response.headers();
+				let expires = headers.get(EXPIRES);
+				let cache = headers.get(CACHE_CONTROL);
+				if expires.is_some() || cache.is_some() {
+					println!("{} {} {:?} {:?} {:?}", Local::now().to_rfc2822(), &source.url, last_scrape, expires, cache);
+				}
+			}
 			let status = response.status();
 			let content = response.bytes().await.stack()?;
 			match rss::Channel::read_from(&content[..]) {
@@ -211,7 +231,7 @@ impl Core {
 		for row in queue {
 			if let Some(next_fetch) = row.next_fetch {
 				if next_fetch < now {
-					if let (Some(owner), Some(source_id)) = (row.owner, row.source_id) {
+					if let (Some(owner), Some(source_id), last_scrape) = (row.owner, row.source_id, row.last_scrape) {
 						let clone = Core {
 							owner_chat: ChatPeerId::from(owner),
 							..self.clone()
@@ -225,7 +245,7 @@ impl Core {
 							}
 						};
 						task::spawn(async move {
-							if let Err(err) = clone.check(source_id, true).await {
+							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await {
 								if let Err(err) = clone.send(&format!("{source}\n\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
 									eprintln!("Check error: {err:?}");
 									// clone.disable(&source_id, owner).await.unwrap();

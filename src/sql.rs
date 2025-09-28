@@ -65,6 +65,7 @@ pub struct Queue {
 	pub source_id: Option<i32>,
 	pub next_fetch: Option<DateTime<Local>>,
 	pub owner: Option<i64>,
+	pub last_scrape: DateTime<Local>,
 }
 
 #[derive(Clone)]
@@ -162,7 +163,7 @@ impl Conn {
 	}
 
 	pub async fn get_queue (&mut self) -> Result<Vec<Queue>> {
-		let block: Vec<Queue> = sqlx::query_as("select source_id, next_fetch, owner from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
+		let block: Vec<Queue> = sqlx::query_as("select source_id, next_fetch, owner, last_scrape from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
 			.fetch_all(&mut *self.0).await.stack()?;
 		Ok(block)
 	}

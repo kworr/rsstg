@@ -31,8 +31,12 @@ create index rsstg_post__hxm on rsstg_post(hxm);
 create index rsstg_post__posted_hxm on rsstg_post(posted,hxm);
 
 create or replace view rsstg_order_old as
-	select source_id, coalesce(last_scrape + make_interval(0,0,0,0,0,(60 / (coalesce(activity, 1)/7 + 1) )::integer), now() - interval '1 minute') as next_fetch, owner
-		from rsstg_source natural left join
+	select
+		source_id,
+		coalesce(last_scrape + make_interval(0,0,0,0,0,(60 / (coalesce(activity, 1)/7 + 1) )::integer), now() - interval '1 minute') as next_fetch,
+		owner,
+		last_scrape
+	from rsstg_source natural left join
 		(select source_id, count(*) as activity
 			from rsstg_post where 
 				hour = extract('hour' from now())::smallint
@@ -47,8 +51,12 @@ create or replace function hxm(timestamptz) returns smallint
 	language sql immutable returns null on null input;
 
 create or replace view rsstg_order as
-	select source_id, coalesce(last_scrape + make_interval(0,0,0,0,0,(60 / (coalesce(activity, 1)/7 + 1) )::integer), now() - interval '1 minute') as next_fetch, owner
-		from rsstg_source natural left join
+	select
+		source_id,
+		coalesce(last_scrape + make_interval(0,0,0,0,0,(60 / (coalesce(activity, 1)/7 + 1) )::integer), now() - interval '1 minute') as next_fetch,
+		owner,
+		last_scrape
+	from rsstg_source natural left join
 		(select source_id, count(*) as activity
 			from rsstg_post where 
 			  (
