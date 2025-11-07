@@ -247,7 +247,7 @@ impl Core {
 						task::spawn(async move {
 							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await {
 								if let Err(err) = clone.send(&format!("{source}\n\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
-									eprintln!("Check error: {err:?}");
+									eprintln!("Check error: {err}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
 							};
