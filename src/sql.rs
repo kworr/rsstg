@@ -36,7 +36,7 @@ pub struct List {
 
 impl fmt::Display for List {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
-		write!(f, "#{} \\*️⃣ `{}` {}\n🔗 `{}`", self.source_id, self.channel,
+		write!(f, "\\#feed\\_{} \\*️⃣ `{}` {}\n🔗 `{}`", self.source_id, self.channel,
 			match self.enabled {
 				true  => "🔄 enabled",
 				false => "⛔ disabled",

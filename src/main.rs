@@ -16,6 +16,7 @@ use tgbot::handler::LongPoll;
 #[async_std::main]
 async fn main() -> Result<()> {
 	let settings = config::Config::builder()
+		.set_default("api_gateway", "https://api.telegram.org").stack()?
 		.add_source(config::File::with_name("rsstg"))
 		.build()
 		.stack()?;

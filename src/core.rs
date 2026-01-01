@@ -76,7 +76,8 @@ impl Core {
 	pub async fn new(settings: config::Config) -> Result<Core> {
 		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
 		let api_key = settings.get_string("api_key").stack()?;
-		let tg = Client::new(&api_key).stack()?;
+		let tg = Client::new(&api_key).stack()?
+			.with_host(settings.get_string("api_gateway").stack()?);
 
 		let mut client = reqwest::Client::builder();
 		if let Ok(proxy) = settings.get_string("proxy") {
