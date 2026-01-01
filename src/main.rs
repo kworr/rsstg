@@ -7,14 +7,22 @@ mod command;
 mod core;
 mod sql;
 
+use async_compat::Compat;
 use stacked_errors::{
 	Result,
 	StackableErr,
 };
 use tgbot::handler::LongPoll;
 
-#[async_std::main]
-async fn main() -> Result<()> {
+fn main () -> Result<()> {
+	smol::future::block_on(Compat::new(async {
+		async_main().await.unwrap();
+	}));
+
+	Ok(())
+}
+
+async fn async_main () -> Result<()> {
 	let settings = config::Config::builder()
 		.set_default("api_gateway", "https://api.telegram.org").stack()?
 		.add_source(config::File::with_name("rsstg"))

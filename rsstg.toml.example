@@ -1,4 +1,5 @@
 pg = "postgres://user:password@hostname/database"
 api_key = "speak with @BotFather to get one"
+api_gateway = "https://api.telegram.org"
 owner = "Your ID (for debugging)"
 proxy = "Link to http or socks5 proxy you want to use. Tor works too"

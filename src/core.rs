@@ -9,15 +9,10 @@ use std::{
 		BTreeMap,
 		HashSet,
 	},
+	sync::Arc,
 };
 
-use async_std::{
-	task,
-	sync::{
-		Arc,
-		Mutex
-	},
-};
+use async_compat::Compat;
 use chrono::{
 	DateTime,
 	Local,
@@ -28,6 +23,10 @@ use reqwest::header::{
 	CACHE_CONTROL,
 	EXPIRES,
 	LAST_MODIFIED
+};
+use smol::{
+	Timer,
+	lock::Mutex,
 };
 use tgbot::{
 	api::Client,
@@ -72,6 +71,13 @@ pub struct Core {
 	http_client: reqwest::Client,
 }
 
+pub struct Post {
+	uri: String,
+	title: String,
+	authors: String,
+	summary: String,
+}
+
 impl Core {
 	pub async fn new(settings: config::Config) -> Result<Core> {
 		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
@@ -96,7 +102,7 @@ impl Core {
 			// max_delay: 60,
 		};
 		let clone = core.clone();
-		task::spawn(async move {
+		smol::spawn(Compat::new(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
@@ -107,9 +113,9 @@ impl Core {
 					},
 					Ok(time) => *time,
 				};
-				task::sleep(delay).await;
+				Timer::after(delay).await;
 			}
-		});
+		})).detach();
 		Ok(core)
 	}
 
@@ -149,7 +155,7 @@ impl Core {
 				false => source.owner,
 			});
 			let mut this_fetch: Option<DateTime<chrono::FixedOffset>> = None;
-			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, String> = BTreeMap::new();
+			let mut posts: BTreeMap<DateTime<chrono::FixedOffset>, Post> = BTreeMap::new();
 
 			let mut builder = self.http_client.get(&source.url);
 			if let Some(last_scrape) = last_scrape {
@@ -174,8 +180,16 @@ impl Core {
 								Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
 								None => DateTime::parse_from_rfc3339(&item.dublin_core_ext().unwrap().dates()[0]),
 							}.stack()?;
-							let url = link;
-							posts.insert(date, url.to_string());
+							let uri = link.to_string();
+							let title = item.title().unwrap_or("").to_string();
+							let authors = item.author().unwrap_or("").to_string();
+							let summary = item.content().unwrap_or("").to_string();
+							posts.insert(date, Post{
+								uri,
+								title,
+								authors,
+								summary,
+							});
 						}
 					};
 				},
@@ -185,8 +199,16 @@ impl Core {
 							Ok(feed) => {
 								for item in feed.entries() {
 									let date = item.published().unwrap();
-									let url = item.links()[0].href();
-									posts.insert(*date, url.to_string());
+									let uri = item.links()[0].href().to_string();
+									let title = item.title().to_string();
+									let authors = item.authors().iter().map(|x| format!("{} <{:?}>", x.name(), x.email())).collect::<Vec<String>>().join(", ");
+									let summary = if let Some(sum) = item.summary() { sum.value.clone() } else { String::new() };
+									posts.insert(*date, Post{
+										uri,
+										title,
+										authors,
+										summary,
+									});
 								};
 							},
 							Err(err) => {
@@ -198,10 +220,10 @@ impl Core {
 					_ => bail!("Unsupported or mangled content:\n{:?}\n{err}\n{status:#?}\n", &source.url)
 				}
 			};
-			for (date, url) in posts.iter() {
+			for (date, post) in posts.iter() {
 				let post_url: Cow<str> = match source.url_re {
-					Some(ref x) => sedregex::ReplaceCommand::new(x).stack()?.execute(url),
-					None => url.into(),
+					Some(ref x) => sedregex::ReplaceCommand::new(x).stack()?.execute(&post.uri),
+					None => post.uri.clone().into(),
 				};
 				if let Some(exists) = conn.exists(&post_url, *id).await.stack()? {
 					if ! exists {
@@ -245,14 +267,14 @@ impl Core {
 								Err(err) => format!("Failed to fetch source data:\n{err}"),
 							}
 						};
-						task::spawn(async move {
+						smol::spawn(Compat::new(async move {
 							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await {
 								if let Err(err) = clone.send(&format!("{source}\n\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
 									eprintln!("Check error: {err}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
 							};
-						});
+						})).detach();
 					}
 				} else if next_fetch - now < delay {
 					delay = next_fetch - now;

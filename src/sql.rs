@@ -1,12 +1,10 @@
 use std::{
 	borrow::Cow,
 	fmt,
+	sync::Arc,
 };
 
-use async_std::sync::{
-	Arc,
-	Mutex,
-};
+use smol::lock::Mutex;
 use chrono::{
 	DateTime,
 	FixedOffset,
