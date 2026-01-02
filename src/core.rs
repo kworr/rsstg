@@ -263,13 +263,13 @@ impl Core {
 							let mut conn = self.db.begin().await.stack()?;
 							match conn.get_one(owner, source_id).await {
 								Ok(Some(source)) => source.to_string(),
-								Ok(None) => "Source not found in database.stack()?".to_string(),
+								Ok(None) => "Source not found in database?".to_string(),
 								Err(err) => format!("Failed to fetch source data:\n{err}"),
 							}
 						};
 						smol::spawn(Compat::new(async move {
 							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await {
-								if let Err(err) = clone.send(&format!("{source}\n\n🛑 {}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
+								if let Err(err) = clone.send(&format!("🛑 {source}\n{}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
 									eprintln!("Check error: {err}");
 									// clone.disable(&source_id, owner).await.unwrap();
 								};
