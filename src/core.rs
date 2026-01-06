@@ -67,24 +67,40 @@ pub struct Token {
 }
 
 impl Token {
-	fn new (running: &Arc<Mutex<HashSet<i32>>>, my_id: i32) -> Option<Token> {
+	/// Attempts to acquire a per-id token by inserting `my_id` into the shared `running` set.
+	///
+	/// If the id was not already present, the function inserts it and returns `Some(Token)`.
+	/// When the returned `Token` is dropped, the id will be removed from the `running` set,
+	/// allowing subsequent acquisitions for the same id.
+	///
+	/// # Parameters
+	///
+	/// - `running`: Shared set tracking active ids.
+	/// - `my_id`: Identifier to acquire a token for.
+	///
+	/// # Returns
+	///
+	/// `Ok(Token)` if the id was successfully acquired, `Error` if a token for the id is already active.
+	async fn new (running: &Arc<Mutex<HashSet<i32>>>, my_id: i32) -> Result<Token> {
 		let running = running.clone();
-		smol::block_on(async {
-			let mut set = running.lock_arc().await;
-			if set.contains(&my_id) {
-				None
-			} else {
-				set.insert(my_id);
-				Some(Token {
-					running,
-					my_id,
-				})
-			}
-		})
+		let mut set = running.lock_arc().await;
+		if set.contains(&my_id) {
+			bail!("Token already taken");
+		} else {
+			set.insert(my_id);
+			Ok(Token {
+				running,
+				my_id,
+			})
+		}
 	}
 }
 
 impl Drop for Token {
+	/// Releases this token's claim on the shared running-set when the token is dropped.
+	///
+	/// The token's identifier is removed from the shared `running` set so that future
+	/// operations for the same id may proceed.
 	fn drop (&mut self) {
 		smol::block_on(async {
 			let mut set = self.running.lock_arc().await;
@@ -168,10 +184,7 @@ impl Core {
 		let mut posted: i32 = 0;
 		let mut conn = self.db.begin().await.stack()?;
 
-		let token = Token::new(&self.running, id);
-		if token.is_none() {
-			bail!("check is already running");
-		}
+		let _token = Token::new(&self.running, id).await.stack()?;
 		let source = conn.get_source(id, self.owner_chat).await.stack()?;
 		conn.set_scrape(id).await.stack()?;
 		let destination = ChatPeerId::from(match real {
