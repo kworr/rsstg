@@ -55,7 +55,19 @@ lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
 }
 
-/// Encodes special HTML entities to prevent them interfering with Telegram HTML
+/// Escape characters that are special in Telegram HTML by prefixing them with a backslash.
+///
+/// This ensures the returned string can be used as HTML-formatted Telegram message content
+/// without special characters being interpreted as HTML markup.
+///
+/// # Examples
+///
+/// ```
+/// let s = "<b>bold & cool</b>";
+/// let escaped = encode(s);
+/// assert!(escaped.contains("\\<"));
+/// assert!(escaped.contains("\\&"));
+/// ```
 pub fn encode (text: &str) -> Cow<'_, str> {
 	RE_SPECIAL.replace_all(text, "\\$1")
 }
@@ -67,6 +79,42 @@ pub struct Token {
 }
 
 impl Token {
+	/// Attempts to acquire a per-id token by inserting `my_id` into the shared `running` set.
+	///
+	/// If the id was not already present, the function inserts it and returns `Some(Token)`.
+	/// When the returned `Token` is dropped, the id will be removed from the `running` set,
+	/// allowing subsequent acquisitions for the same id.
+	///
+	/// # Parameters
+	///
+	/// - `running`: Shared set tracking active ids.
+	/// - `my_id`: Identifier to acquire a token for.
+	///
+	/// # Returns
+	///
+	/// `Some(Token)` if the id was successfully acquired, `None` if a token for the id is already active.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// use std::collections::HashSet;
+	/// use std::sync::Arc;
+	/// // `async_lock::Mutex` is used by this crate for `lock_arc().await` semantics.
+	/// let running = Arc::new(async_lock::Mutex::new(HashSet::new()));
+	///
+	/// // First acquisition succeeds
+	/// let t1 = crate::core::Token::new(&running, 1);
+	/// assert!(t1.is_some());
+	///
+	/// // Second acquisition for the same id fails while first token is held
+	/// let t2 = crate::core::Token::new(&running, 1);
+	/// assert!(t2.is_none());
+	///
+	/// // Dropping the first token frees the id
+	/// drop(t1);
+	/// let t3 = crate::core::Token::new(&running, 1);
+	/// assert!(t3.is_some());
+	/// ```
 	fn new (running: &Arc<Mutex<HashSet<i32>>>, my_id: i32) -> Option<Token> {
 		let running = running.clone();
 		smol::block_on(async {
@@ -85,6 +133,10 @@ impl Token {
 }
 
 impl Drop for Token {
+	/// Releases this token's claim on the shared running-set when the token is dropped.
+	///
+	/// The token's identifier is removed from the shared `running` set so that future
+	/// operations for the same id may proceed.
 	fn drop (&mut self) {
 		smol::block_on(async {
 			let mut set = self.running.lock_arc().await;
@@ -112,6 +164,38 @@ pub struct Post {
 }
 
 impl Core {
+	/// Create a Core instance from configuration and start its background autofetch loop.
+	///
+	/// The provided `settings` must include:
+	/// - `owner` (integer): chat id to use as the default destination,
+	/// - `api_key` (string): Telegram bot API key,
+	/// - `api_gateway` (string): Telegram API gateway host,
+	/// - `pg` (string): PostgreSQL connection string,
+	/// - optional `proxy` (string): proxy URL for the HTTP client.
+	///
+	/// On success returns an initialized `Core` with Telegram and HTTP clients, database connection,
+	/// an empty running set for per-id tokens, and a spawned background task that periodically runs
+	/// `autofetch`. If any required setting is missing or initialization fails, an error is returned.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use std::collections::HashMap;
+	/// # use smol::block_on;
+	/// # async fn make_config() -> config::Config {
+	/// #     let mut cfg = config::Config::default();
+	/// #     cfg.set("owner", 12345i64).unwrap();
+	/// #     cfg.set("api_key", "TEST_TOKEN").unwrap();
+	/// #     cfg.set("api_gateway", "https://api.telegram.org").unwrap();
+	/// #     cfg.set("pg", "postgres://user:pass@localhost/db").unwrap();
+	/// #     cfg
+	/// # }
+	/// # block_on(async {
+	/// let settings = block_on(make_config());
+	/// let core = Core::new(settings).await;
+	/// assert!(core.is_ok());
+	/// # });
+	/// ```
 	pub async fn new(settings: config::Config) -> Result<Core> {
 		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
 		let api_key = settings.get_string("api_key").stack()?;
@@ -164,6 +248,33 @@ impl Core {
 		).await.stack()
 	}
 
+	/// Fetches the feed for a source, sends any newly discovered posts to the appropriate chat, and records them in the database.
+	///
+	/// This acquires a per-source guard to prevent concurrent checks for the same `id`. If a check is already running for
+	/// the given `id`, the function returns an error. If `last_scrape` is provided, it is sent as the `If-Modified-Since`
+	/// header to the feed request. The function parses RSS or Atom feeds, sends unseen post URLs to either the source's
+	/// channel (when `real` is true) or the source owner (when `real` is false), and persists posted entries so they are
+	/// not reposted later.
+	///
+	/// Parameters:
+	/// - `id`: Identifier of the source to check.
+	/// - `real`: When `true`, send posts to the source's channel; when `false`, send to the source owner.
+	/// - `last_scrape`: Optional timestamp used to set the `If-Modified-Since` header for the HTTP request.
+	///
+	/// # Returns
+	///
+	/// `Posted: N` where `N` is the number of posts processed and sent.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use chrono::Local;
+	/// # async fn example(core: &crate::Core) -> anyhow::Result<()> {
+	/// let result = core.check(42, true, Some(Local::now())).await?;
+	/// assert!(result.starts_with("Posted:"));
+	/// # Ok(())
+	/// # }
+	/// ```
 	pub async fn check (&self, id: i32, real: bool, last_scrape: Option<DateTime<Local>>) -> Result<String> {
 		let mut posted: i32 = 0;
 		let mut conn = self.db.begin().await.stack()?;
