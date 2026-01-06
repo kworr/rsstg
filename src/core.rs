@@ -55,7 +55,10 @@ lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
 }
 
-/// Encodes special HTML entities to prevent them interfering with Telegram HTML
+/// Escape characters that are special in Telegram HTML by prefixing them with a backslash.
+///
+/// This ensures the returned string can be used as HTML-formatted Telegram message content
+/// without special characters being interpreted as HTML markup.
 pub fn encode (text: &str) -> Cow<'_, str> {
 	RE_SPECIAL.replace_all(text, "\\$1")
 }
@@ -128,6 +131,18 @@ pub struct Post {
 }
 
 impl Core {
+	/// Create a Core instance from configuration and start its background autofetch loop.
+	///
+	/// The provided `settings` must include:
+	/// - `owner` (integer): chat id to use as the default destination,
+	/// - `api_key` (string): Telegram bot API key,
+	/// - `api_gateway` (string): Telegram API gateway host,
+	/// - `pg` (string): PostgreSQL connection string,
+	/// - optional `proxy` (string): proxy URL for the HTTP client.
+	///
+	/// On success returns an initialized `Core` with Telegram and HTTP clients, database connection,
+	/// an empty running set for per-id tokens, and a spawned background task that periodically runs
+	/// `autofetch`. If any required setting is missing or initialization fails, an error is returned.
 	pub async fn new(settings: config::Config) -> Result<Core> {
 		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
 		let api_key = settings.get_string("api_key").stack()?;
@@ -180,6 +195,22 @@ impl Core {
 		).await.stack()
 	}
 
+	/// Fetches the feed for a source, sends any newly discovered posts to the appropriate chat, and records them in the database.
+	///
+	/// This acquires a per-source guard to prevent concurrent checks for the same `id`. If a check is already running for
+	/// the given `id`, the function returns an error. If `last_scrape` is provided, it is sent as the `If-Modified-Since`
+	/// header to the feed request. The function parses RSS or Atom feeds, sends unseen post URLs to either the source's
+	/// channel (when `real` is true) or the source owner (when `real` is false), and persists posted entries so they are
+	/// not reposted later.
+	///
+	/// Parameters:
+	/// - `id`: Identifier of the source to check.
+	/// - `real`: When `true`, send posts to the source's channel; when `false`, send to the source owner.
+	/// - `last_scrape`: Optional timestamp used to set the `If-Modified-Since` header for the HTTP request.
+	///
+	/// # Returns
+	///
+	/// `Posted: N` where `N` is the number of posts processed and sent.
 	pub async fn check (&self, id: i32, real: bool, last_scrape: Option<DateTime<Local>>) -> Result<String> {
 		let mut posted: i32 = 0;
 		let mut conn = self.db.begin().await.stack()?;
@@ -216,7 +247,14 @@ impl Core {
 						let date = match item.pub_date() {
 							Some(feed_date) => DateTime::parse_from_rfc2822(feed_date),
 							None => DateTime::parse_from_rfc3339(match item.dublin_core_ext() {
-								Some(dates) => &dates.dates()[0],
+								Some(ext) => {
+									let dates = ext.dates();
+									if dates.is_empty() {
+										bail!("Feed item has Dublin Core extension but no dates.")
+									} else {
+										&dates[0]
+									}
+								},
 								None => bail!("Feed item misses posting date."),
 							}),
 						}.stack()?;
