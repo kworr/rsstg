@@ -55,7 +55,21 @@ lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
 }
 
-/// Encodes special HTML entities to prevent them interfering with Telegram HTML
+/// Escape characters that have special meaning in Telegram HTML by prefixing them with a backslash.
+///
+/// This function scans `text` for characters matched by `RE_SPECIAL` and returns a copy
+/// where each occurrence is escaped with a leading backslash so the text can be safely used
+/// as Telegram HTML content.
+///
+/// # Examples
+///
+/// ```
+/// let raw = "a < b & c / d";
+/// let encoded = encode(raw);
+/// // Encoded string differs from the original and contains escape backslashes.
+/// assert_ne!(encoded, raw);
+/// assert!(encoded.contains('\\'));
+/// ```
 pub fn encode (text: &str) -> Cow<'_, str> {
 	RE_SPECIAL.replace_all(text, "\\$1")
 }
@@ -67,20 +81,37 @@ pub struct Token {
 }
 
 impl Token {
-	/// Attempts to acquire a per-id token by inserting `my_id` into the shared `running` set.
+	/// Acquire a per-id token to ensure exclusive access for a given identifier.
 	///
-	/// If the id was not already present, the function inserts it and returns `Some(Token)`.
-	/// When the returned `Token` is dropped, the id will be removed from the `running` set,
-	/// allowing subsequent acquisitions for the same id.
+	/// On success this returns a `Token` that prevents other callers from acquiring the same
+	/// `my_id` while it exists. Dropping the returned `Token` removes `my_id` from the shared
+	/// `running` set and allows subsequent acquisitions for that id.
 	///
 	/// # Parameters
 	///
-	/// - `running`: Shared set tracking active ids.
-	/// - `my_id`: Identifier to acquire a token for.
+	/// - `running`: shared `Arc<Mutex<HashSet<i32>>>` that tracks active ids.
+	/// - `my_id`: the identifier to acquire.
 	///
 	/// # Returns
 	///
-	/// `Ok(Token)` if the id was successfully acquired, `Error` if a token for the id is already active.
+	/// `Ok(Token)` if `my_id` was inserted into `running`, `Err` if a token for `my_id` is already active.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// use std::sync::Arc;
+	/// use std::collections::HashSet;
+	/// // create the shared set (uses the same Mutex type as the surrounding crate)
+	/// let running = Arc::new(smol::lock::Mutex::new(HashSet::new()));
+	///
+	/// // acquire a token for id 1
+	/// let t1 = smol::block_on(Token::new(&running, 1)).expect("should acquire token");
+	///
+	/// // dropping releases the id so it can be re-acquired
+	/// drop(t1);
+	/// let t2 = smol::block_on(Token::new(&running, 1)).expect("should re-acquire token");
+	/// drop(t2);
+	/// ```
 	async fn new (running: &Arc<Mutex<HashSet<i32>>>, my_id: i32) -> Result<Token> {
 		let running = running.clone();
 		let mut set = running.lock_arc().await;
@@ -128,6 +159,43 @@ pub struct Post {
 }
 
 impl Core {
+	/// Create a new Core instance from configuration and start its background autofetch loop.
+	///
+	/// The provided `settings` must include the application configuration values required to
+	/// initialise the Telegram client, HTTP client and database:
+	/// - "owner" : chat id (integer)
+	/// - "api_key" : Telegram API key (string)
+	/// - "api_gateway" : Telegram API gateway host (string)
+	/// - "pg" : PostgreSQL connection string (string)
+	/// Optionally a "proxy" (string) may be provided to configure the HTTP client proxy.
+	///
+	/// # Parameters
+	///
+	/// - `settings` — application configuration containing the keys listed above.
+	///
+	/// # Returns
+	///
+	/// `Ok(Core)` containing an initialised Core ready to handle updates and perform autofetches,
+	/// or an error if any required configuration is missing or initialisation fails.
+	///
+	/// # Examples
+	///
+	/// ```no_run
+	/// # use smol::block_on;
+	/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+	/// #     block_on(async {
+	/// let mut cfg = config::Config::default();
+	/// // Populate cfg with required keys: "owner", "api_key", "api_gateway", "pg"
+	/// // e.g. cfg.set("owner", 123i32)?;
+	/// // cfg.set("api_key", "TOKEN")?;
+	/// // cfg.set("api_gateway", "https://api.telegram.org")?;
+	/// // cfg.set("pg", "postgres://user:pass@localhost/db")?;
+	/// let core = crate::core::Core::new(cfg).await?;
+	/// // core is now initialised and its autofetch loop is running in the background
+	/// #     Ok::<(), Box<dyn std::error::Error>>(())
+	/// # }
+	/// # }
+	/// ```
 	pub async fn new(settings: config::Config) -> Result<Core> {
 		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
 		let api_key = settings.get_string("api_key").stack()?;
@@ -180,6 +248,21 @@ impl Core {
 		).await.stack()
 	}
 
+	/// Checks a feed source by ID, posts any newly discovered entries to the selected chat, and returns a brief summary.
+	///
+	/// The `id` identifies the feed source to check. If `real` is true the feed is posted to the source's channel; if false it is posted to the source owner. `last_scrape`, when provided, is used to set a `Last-Modified` header for conditional requests.
+	///
+	/// # Returns
+	///
+	/// A summary string of the operation, for example `Posted: 3`.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// // Illustrative example — replace `core` with an initialised Core instance.
+	/// let result = smol::block_on(core.check(42, true, None)).unwrap();
+	/// assert!(result.starts_with("Posted:"));
+	/// ```
 	pub async fn check (&self, id: i32, real: bool, last_scrape: Option<DateTime<Local>>) -> Result<String> {
 		let mut posted: i32 = 0;
 		let mut conn = self.db.begin().await.stack()?;
@@ -283,6 +366,19 @@ impl Core {
 		Ok(format!("Posted: {posted}"))
 	}
 
+	/// Determine how long to wait until the next scheduled fetch and trigger checks for due queue entries.
+	///
+	/// Spawns background tasks to invoke `check` for each queue row whose `next_fetch` is before the current time. Returns the smallest non-zero duration until the next queued `next_fetch`, or one minute if no sooner fetch is scheduled. Database errors or failures converting the computed delay to `std::time::Duration` are propagated through the `Result`.
+	///
+	/// # Examples
+	///
+	/// ```no_run
+	/// # async fn example(core: &Core) -> Result<(), anyhow::Error> {
+	/// let delay = core.autofetch().await?; // `delay` is a std::time::Duration
+	/// println!("Next fetch in {:?}", delay);
+	/// # Ok(())
+	/// # }
+	/// ```
 	async fn autofetch(&self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();

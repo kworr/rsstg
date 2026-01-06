@@ -14,6 +14,22 @@ use stacked_errors::{
 };
 use tgbot::handler::LongPoll;
 
+/// Program entry point that initialises and runs the asynchronous bot runtime.
+///
+/// This function drives the async runtime, invoking the core asynchronous initialisation
+/// and long-poll loop, then returns on completion.
+///
+/// # Examples
+///
+/// ```no_run
+/// fn main_wrapper() {
+///     // In normal execution the binary's `main` calls this function.
+///     // `main()` returns a `Result<()>` which can be unwrapped for simple examples.
+///     rsstg::main().unwrap();
+/// }
+/// ```
+///
+/// Returns `Ok(())` on successful completion, or an error if startup fails.
 fn main () -> Result<()> {
 	smol::block_on(Compat::new(async {
 		async_main().await.unwrap();
