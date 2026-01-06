@@ -104,6 +104,8 @@ impl Drop for Token {
 	///
 	/// The token's identifier is removed from the shared `running` set so that future
 	/// operations for the same id may proceed.
+	///
+	/// TODO: is using block_on inside block_on safe? Currently tested and working fine.
 	fn drop (&mut self) {
 		smol::block_on(async {
 			let mut set = self.running.lock_arc().await;
@@ -230,6 +232,7 @@ impl Core {
 			builder = builder.header(LAST_MODIFIED, last_scrape.to_rfc2822());
 		};
 		let response = builder.send().await.stack()?;
+		#[cfg(debug_assertions)]
 		{
 			let headers = response.headers();
 			let expires = headers.get(EXPIRES);
@@ -276,8 +279,16 @@ impl Core {
 					match atom_syndication::Feed::read_from(&content[..]) {
 						Ok(feed) => {
 							for item in feed.entries() {
-								let date = item.published().unwrap();
-								let uri = item.links()[0].href().to_string();
+								let date = item.published()
+									.stack_err("Feed item missing publishing date.")?;
+								let uri = {
+									let links = item.links();
+									if links.is_empty() {
+										bail!("Feed item missing post links.");
+									} else {
+										links[0].href().to_string()
+									}
+								};
 								let title = item.title().to_string();
 								let authors = item.authors().iter().map(|x| format!("{} <{:?}>", x.name(), x.email())).collect::<Vec<String>>().join(", ");
 								let summary = if let Some(sum) = item.summary() { sum.value.clone() } else { String::new() };
