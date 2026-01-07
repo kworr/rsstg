@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.5.2"
+version = "0.5.3"
 authors = ["arcade"]
 edition = "2021"
 
@@ -20,6 +20,7 @@ sedregex = "0.2.5"
 smol = "2.0.2"
 stacked_errors = "0.7.1"
 sqlx = { version = "0.8", features = [ "postgres", "runtime-tokio-rustls", "chrono", "macros" ], default-features = false }
+url = "2.5.8"
 
 [profile.release]
 lto = true

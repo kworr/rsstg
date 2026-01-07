@@ -55,10 +55,10 @@ lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
 }
 
-/// Escape characters that are special in Telegram HTML by prefixing them with a backslash.
+/// Escape characters that are special in Telegram MarkdownV2 by prefixing them with a backslash.
 ///
-/// This ensures the returned string can be used as HTML-formatted Telegram message content
-/// without special characters being interpreted as HTML markup.
+/// This ensures the returned string can be used as MarkdownV2-formatted Telegram message content
+/// without special characters being interpreted as MarkdownV2 markup.
 pub fn encode (text: &str) -> Cow<'_, str> {
 	RE_SPECIAL.replace_all(text, "\\$1")
 }
@@ -314,19 +314,17 @@ impl Core {
 				Some(ref x) => sedregex::ReplaceCommand::new(x).stack()?.execute(&post.uri),
 				None => post.uri.clone().into(),
 			};
-			if let Some(exists) = conn.exists(&post_url, id).await.stack()? {
-				if ! exists {
-					if this_fetch.is_none() || *date > this_fetch.unwrap() {
-						this_fetch = Some(*date);
-					};
-					self.send( match &source.iv_hash {
-						Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
-						None => format!("{post_url}"),
-					}, Some(destination), Some(ParseMode::Html)).await.stack()?;
-					conn.add_post(id, date, &post_url).await.stack()?;
+			if ! conn.exists(&post_url, id).await.stack()? {
+				if this_fetch.is_none() || *date > this_fetch.unwrap() {
+					this_fetch = Some(*date);
 				};
+				self.send( match &source.iv_hash {
+					Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
+					None => format!("{post_url}"),
+				}, Some(destination), Some(ParseMode::Html)).await.stack()?;
+				conn.add_post(id, date, &post_url).await.stack()?;
+				posted += 1;
 			};
-			posted += 1;
 		};
 		posts.clear();
 		Ok(format!("Posted: {posted}"))

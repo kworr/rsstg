@@ -16,10 +16,10 @@ use tgbot::types::{
 	Message,
 	ParseMode::MarkdownV2,
 };
+use url::Url;
 
 lazy_static! {
 	static ref RE_USERNAME: Regex = Regex::new(r"^@([a-zA-Z][a-zA-Z0-9_]+)$").unwrap();
-	static ref RE_LINK: Regex = Regex::new(r"^https?://[a-zA-Z.0-9-]+/[-_a-zA-Z.:;0-9/?=]+$").unwrap();
 	static ref RE_IV_HASH: Regex = Regex::new(r"^[a-f0-9]{14}$").unwrap();
 }
 
@@ -95,8 +95,15 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 	if ! RE_USERNAME.is_match(channel) {
 		bail!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {channel:?}");
 	};
-	if ! RE_LINK.is_match(url) {
-		bail!("Link should be a link to atom/rss feed, something like \"https://domain/path\".\nNot {url:?}");
+	{
+		let parsed_url = Url::parse(url)
+			.stack_err("Expecting a valid link to ATOM/RSS feed.")?;
+		match parsed_url.scheme() {
+			"http" | "https" => {},
+			scheme => {
+				bail!("Unsupported URL scheme: {scheme}");
+			},
+		};
 	}
 	let iv_hash = match iv_hash {
 		Some(hash) => {
