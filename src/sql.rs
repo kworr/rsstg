@@ -150,16 +150,20 @@ impl Conn {
 		}
 	}
 
-	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<Option<bool>>
+	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<bool>
 	where I: Into<i64> {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
 			.bind(post_url)
 			.bind(id.into())
 			.fetch_one(&mut *self.0).await.stack()?;
-		let exists: Option<bool> = row.try_get("exists").stack()?;
-		Ok(exists)
+		if let Some(exists) = row.try_get("exists").stack()? {
+			Ok(exists)
+		} else {
+			bail!("Database error: can't check whether source exists.");
+		}
 	}
 
+	/// Get all pending events for (now + 1 minute)
 	pub async fn get_queue (&mut self) -> Result<Vec<Queue>> {
 		let block: Vec<Queue> = sqlx::query_as("select source_id, next_fetch, owner, last_scrape from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
 			.fetch_all(&mut *self.0).await.stack()?;

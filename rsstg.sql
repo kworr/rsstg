@@ -22,7 +22,7 @@ create table rsstg_post (
 	url text not null,
 	hour smallint not null generated always as (extract('hour' from posted at time zone 'utc')) stored,
 	hxm smallint not null generated always as (hxm(posted)) stored,
-	FOREIGN KEY (source_id) REFERENCES rsstg_source(source_id) on delete cascade,
+	FOREIGN KEY (source_id) REFERENCES rsstg_source(source_id) on delete cascade
 );
 create unique index rsstg_post__url on rsstg_post(url);
 create index rsstg_post__hour on rsstg_post(hour);

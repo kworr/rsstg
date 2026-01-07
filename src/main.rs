@@ -15,7 +15,7 @@ use stacked_errors::{
 use tgbot::handler::LongPoll;
 
 fn main () -> Result<()> {
-	smol::future::block_on(Compat::new(async {
+	smol::block_on(Compat::new(async {
 		async_main().await.unwrap();
 	}));
 
