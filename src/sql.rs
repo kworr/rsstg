@@ -150,6 +150,24 @@ impl Conn {
 		}
 	}
 
+	/// Checks whether a post with the given URL exists for the specified source.
+	///
+	/// # Parameters
+	/// - `post_url`: The URL of the post to check.
+	/// - `id`: The source identifier (converted to `i64`).
+	///
+	/// # Returns
+	/// `true` if a post with the URL exists for the source, `false` otherwise.
+	///
+	/// # Examples
+	///
+	/// ```no_run
+	/// # async fn example(mut conn: Conn) -> Result<(), Box<dyn std::error::Error>> {
+	/// let exists = conn.exists("https://example.com/post", 42).await?;
+	/// println!("post exists: {}", exists);
+	/// # Ok(())
+	/// # }
+	/// ```
 	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<bool>
 	where I: Into<i64> {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")

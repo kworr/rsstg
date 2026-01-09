@@ -23,12 +23,47 @@ lazy_static! {
 	static ref RE_IV_HASH: Regex = Regex::new(r"^[a-f0-9]{14}$").unwrap();
 }
 
+/// Sends an informational message to the message's chat linking to the bot help channel.
+///
+/// The message "We are open. Probably. Visit [channel](https://t.me/rsstg_bot_help/3) for details." is sent using MarkdownV2 formatting to the chat from which `msg` originates.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use crate::core::Core;
+/// # use crate::tg_types::Message;
+/// # async fn doc_example(core: &Core, msg: &Message) {
+/// start(core, msg).await.unwrap();
+/// # }
+/// ```
+///
+/// # Returns
+///
+/// `Ok(())` on success; any error from sending the message is propagated.
 pub async fn start (core: &Core, msg: &Message) -> Result<()> {
 	core.tg.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
 		Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
 	Ok(())
 }
 
+/// Send the sender's subscription list to the chat.
+///
+/// Retrieves the message sender's user ID, obtains their subscription list from `core`,
+/// and sends the resulting reply into the message chat using MarkdownV2.
+///
+/// # Returns
+///
+/// `Ok(())` on success, error otherwise.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use crate::Core;
+/// # use tg::types::Message;
+/// # async fn example(core: &Core, msg: &Message) {
+/// let _ = crate::handlers::list(core, msg).await;
+/// # }
+/// ```
 pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
@@ -37,6 +72,35 @@ pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	Ok(())
 }
 
+/// Handle channel-management commands that operate on a single numeric source ID.
+///
+/// This validates that exactly one numeric argument is provided, performs the requested
+/// operation (check, clean, enable, delete, disable) against the database or core,
+/// and sends the resulting reply to the chat.
+///
+/// # Parameters
+///
+/// - `core`: application core containing database and Telegram clients.
+/// - `command`: command string (e.g. "/check", "/clean", "/enable", "/delete", "/disable").
+/// - `msg`: incoming Telegram message that triggered the command; used to determine sender and chat.
+/// - `words`: command arguments; expected to contain exactly one element that parses as a 32-bit integer.
+///
+/// # Returns
+///
+/// `Ok(())` on success, an error otherwise.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example_usage() -> anyhow::Result<()> {
+/// // `core` and `msg` are provided by the surrounding bot framework in real usage.
+/// // Here we show the intended call shape:
+/// let command = "/check";
+/// let words = vec!["42".to_string()];
+/// // command(&core, command, &msg, &words).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let mut conn = core.db.begin().await.stack()?;
 	let sender = msg.sender.get_user_id()
@@ -61,6 +125,30 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 	Ok(())
 }
 
+/// Validate command arguments, check permissions and update or add a channel feed configuration in the database.
+///
+/// This function parses and validates parameters supplied by a user command (either "/update <id> ..." or "/add ..."),
+/// verifies the channel username and feed URL, optionally validates an IV hash and a replacement regexp,
+/// ensures both the bot and the command sender are administrators of the target channel, and performs the database update.
+///
+/// # Parameters
+///
+/// - `command` — the invoked command, expected to be either `"/update"` (followed by a numeric source id) or `"/add"`.
+/// - `msg` — the incoming Telegram message; used to derive the command sender and target chat id for the reply.
+/// - `words` — the command arguments: for `"/add"` expected `channel url [iv_hash|'-'] [url_re|'-']`; for `"/update"` the first element must be a numeric `source_id` followed by the same parameters.
+///
+/// # Returns
+///
+/// `Ok(())` on success, `Err` if arguments are missing or invalid, URL parsing or scheme validation fails, IV hash or regexp validation fails, permission checks fail (bot or user not admin), or the database/update operation fails.
+///
+/// # Examples
+///
+/// ```
+/// # tokio_test::block_on(async {
+/// // This is a conceptual example; in real usage `core`, `msg` and `words` are provided by the bot runtime.
+/// // update(&core, "/add", &msg, &["@channel".into(), "https://example.com/feed.xml".into()]).await.unwrap();
+/// # });
+/// ```
 pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;

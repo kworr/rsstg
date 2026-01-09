@@ -122,18 +122,35 @@ pub struct Post {
 }
 
 impl Core {
-	/// Create a Core instance from configuration and start its background autofetch loop.
+	/// Initialises a Core from configuration and starts its background autofetch loop.
 	///
-	/// The provided `settings` must include:
-	/// - `owner` (integer): chat id to use as the default destination,
-	/// - `api_key` (string): Telegram bot API key,
-	/// - `api_gateway` (string): Telegram API gateway host,
-	/// - `pg` (string): PostgreSQL connection string,
+	/// The `settings` must provide the following keys:
+	/// - `owner` (integer): default chat id to use as the owner/destination.
+	/// - `api_key` (string): Telegram bot API key.
+	/// - `api_gateway` (string): Telegram API gateway host.
+	/// - `pg` (string): PostgreSQL connection string.
 	/// - optional `proxy` (string): proxy URL for the HTTP client.
 	///
-	/// On success returns an initialized `Core` with Telegram and HTTP clients, database connection,
-	/// an empty running set for per-id tokens, and a spawned background task that periodically runs
-	/// `autofetch`. If any required setting is missing or initialization fails, an error is returned.
+	/// On success returns a fully initialised `Core` (Telegram client, database connection,
+	/// HTTP client, and an empty per-id running set) and spawns a background task that
+	/// periodically runs `autofetch`. If any required setting is missing or initialisation
+	/// fails, an error is returned.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # use smol::block_on;
+	/// # async fn try_new() -> anyhow::Result<()> {
+	/// let settings = config::Config::from_iter(&[
+	///     ("owner", "123456"),
+	///     ("api_key", "BOT_TOKEN"),
+	///     ("api_gateway", "api.telegram.org"),
+	///     ("pg", "postgres://user:pass@localhost/db"),
+	/// ]);
+	/// let core = crate::core::Core::new(settings).await?;
+	/// # Ok(())
+	/// # }
+	/// ```
 	pub async fn new(settings: config::Config) -> Result<Core> {
 		let mut client = reqwest::Client::builder();
 		if let Ok(proxy) = settings.get_string("proxy") {
@@ -298,6 +315,22 @@ impl Core {
 		Ok(format!("Posted: {posted}"))
 	}
 
+	/// Determine the delay until the next scheduled fetch and spawn background checks for any overdue sources.
+	///
+	/// This scans the database queue, spawns background tasks to run checks for sources whose `next_fetch` is in the past (each task uses a Core clone with the appropriate owner), and computes the shortest duration until the next `next_fetch`.
+	///
+	/// # Returns
+	///
+	/// The duration until the next scheduled fetch.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// // Run inside an async executor (smol used in the crate)
+	/// // let core: Core = /* construct Core */ ;
+	/// // let delay = smol::block_on(core.autofetch()).unwrap();
+	/// // assert!(delay.as_secs() >= 0);
+	/// ```
 	async fn autofetch(&self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();
@@ -349,6 +382,22 @@ impl Core {
 }
 
 impl UpdateHandler for Core {
+	/// Dispatches an incoming Telegram update to a matching command handler and reports handler errors to the originating chat.
+	///
+	/// This method inspects the update; if it contains a message that can be parsed as a bot command, it executes the corresponding command handler.
+	/// If the handler returns an error, the error text is sent back to the message's chat using MarkdownV2 formatting. Unknown commands produce an error which is also reported to the chat.
+	///
+	/// # Parameters
+	///
+	/// - `update`: The incoming Telegram update to handle; only message updates that parse as commands are processed.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// # async fn example(core: &crate::Core, update: crate::Update) {
+	/// core.handle(update).await;
+	/// # }
+	/// ```
 	async fn handle (&self, update: Update) {
 		if let UpdateType::Message(msg) = update.update_type 
 			&& let Ok(cmd) = Command::try_from(msg)
