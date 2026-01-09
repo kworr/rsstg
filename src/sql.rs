@@ -159,7 +159,7 @@ impl Conn {
 		if let Some(exists) = row.try_get("exists").stack()? {
 			Ok(exists)
 		} else {
-			bail!("Database error: can't check whether source exists.");
+			bail!("Database error: can't check whether post exists.");
 		}
 	}
 
