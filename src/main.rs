@@ -6,6 +6,7 @@
 mod command;
 mod core;
 mod sql;
+mod tg_bot;
 
 use async_compat::Compat;
 use stacked_errors::{
@@ -31,7 +32,7 @@ async fn async_main () -> Result<()> {
 
 	let core = core::Core::new(settings).await.stack()?;
 
-	LongPoll::new(core.tg.clone(), core).run().await;
+	LongPoll::new(core.tg.client.clone(), core).run().await;
 
 	Ok(())
 }

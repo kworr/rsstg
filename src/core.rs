@@ -1,6 +1,7 @@
 use crate::{
 	command,
 	sql::Db,
+	tg_bot::Tg,
 };
 
 use std::{
@@ -19,26 +20,17 @@ use chrono::{
 };
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::header::{
-	CACHE_CONTROL,
-	EXPIRES,
-	LAST_MODIFIED
-};
+use reqwest::header::LAST_MODIFIED;
 use smol::{
 	Timer,
 	lock::Mutex,
 };
 use tgbot::{
-	api::Client,
 	handler::UpdateHandler,
 	types::{
-		Bot,
 		ChatPeerId,
 		Command,
-		GetBot,
-		Message,
 		ParseMode,
-		SendMessage,
 		Update,
 		UpdateType,
 		UserPeerId,
@@ -116,10 +108,7 @@ impl Drop for Token {
 
 #[derive(Clone)]
 pub struct Core {
-	owner_chat: ChatPeerId,
-	// max_delay: u16,
-	pub tg: Client,
-	pub me: Bot,
+	pub tg: Tg,
 	pub db: Db,
 	running: Arc<Mutex<HashSet<i32>>>,
 	http_client: reqwest::Client,
@@ -127,9 +116,9 @@ pub struct Core {
 
 pub struct Post {
 	uri: String,
-	title: String,
-	authors: String,
-	summary: String,
+	_title: String,
+	_authors: String,
+	_summary: String,
 }
 
 impl Core {
@@ -146,33 +135,25 @@ impl Core {
 	/// an empty running set for per-id tokens, and a spawned background task that periodically runs
 	/// `autofetch`. If any required setting is missing or initialization fails, an error is returned.
 	pub async fn new(settings: config::Config) -> Result<Core> {
-		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
-		let api_key = settings.get_string("api_key").stack()?;
-		let tg = Client::new(&api_key).stack()?
-			.with_host(settings.get_string("api_gateway").stack()?);
-
 		let mut client = reqwest::Client::builder();
 		if let Ok(proxy) = settings.get_string("proxy") {
 			let proxy = reqwest::Proxy::all(proxy).stack()?;
 			client = client.proxy(proxy);
 		}
-		let http_client = client.build().stack()?;
-		let me = tg.execute(GetBot).await.stack()?;
+
 		let core = Core {
-			tg,
-			me,
-			owner_chat,
+			tg: Tg::new(&settings).await.stack()?,
 			db: Db::new(&settings.get_string("pg").stack()?)?,
 			running: Arc::new(Mutex::new(HashSet::new())),
-			http_client,
-			// max_delay: 60,
+			http_client: client.build().stack()?,
 		};
+
 		let clone = core.clone();
 		smol::spawn(Compat::new(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
-						if let Err(err) = clone.send(format!("🛑 {err}"), None, None).await {
+						if let Err(err) = clone.tg.send(format!("🛑 {err}"), None, None).await {
 							eprintln!("Autofetch error: {err:?}");
 						};
 						std::time::Duration::from_secs(60)
@@ -183,18 +164,6 @@ impl Core {
 			}
 		})).detach();
 		Ok(core)
-	}
-
-	pub async fn send <S>(&self, msg: S, target: Option<ChatPeerId>, mode: Option<ParseMode>) -> Result<Message>
-	where S: Into<String> {
-		let msg = msg.into();
-
-		let mode = mode.unwrap_or(ParseMode::Html);
-		let target = target.unwrap_or(self.owner_chat);
-		self.tg.execute(
-			SendMessage::new(target, msg)
-				.with_parse_mode(mode)
-		).await.stack()
 	}
 
 	/// Fetches the feed for a source, sends any newly discovered posts to the appropriate chat, and records them in the database.
@@ -218,7 +187,7 @@ impl Core {
 		let mut conn = self.db.begin().await.stack()?;
 
 		let _token = Token::new(&self.running, id).await.stack()?;
-		let source = conn.get_source(id, self.owner_chat).await.stack()?;
+		let source = conn.get_source(id, self.tg.owner).await.stack()?;
 		conn.set_scrape(id).await.stack()?;
 		let destination = ChatPeerId::from(match real {
 			true => source.channel_id,
@@ -234,6 +203,10 @@ impl Core {
 		let response = builder.send().await.stack()?;
 		#[cfg(debug_assertions)]
 		{
+			use reqwest::header::{
+				CACHE_CONTROL,
+				EXPIRES,
+			};
 			let headers = response.headers();
 			let expires = headers.get(EXPIRES);
 			let cache = headers.get(CACHE_CONTROL);
@@ -261,15 +234,11 @@ impl Core {
 								None => bail!("Feed item misses posting date."),
 							}),
 						}.stack()?;
-						let uri = link.to_string();
-						let title = item.title().unwrap_or("").to_string();
-						let authors = item.author().unwrap_or("").to_string();
-						let summary = item.content().unwrap_or("").to_string();
 						posts.insert(date, Post{
-							uri,
-							title,
-							authors,
-							summary,
+							uri: link.to_string(),
+							_title: item.title().unwrap_or("").to_string(),
+							_authors: item.author().unwrap_or("").to_string(),
+							_summary: item.content().unwrap_or("").to_string(),
 						});
 					}
 				};
@@ -289,14 +258,13 @@ impl Core {
 										links[0].href().to_string()
 									}
 								};
-								let title = item.title().to_string();
-								let authors = item.authors().iter().map(|x| format!("{} <{:?}>", x.name(), x.email())).collect::<Vec<String>>().join(", ");
-								let summary = if let Some(sum) = item.summary() { sum.value.clone() } else { String::new() };
+								let _authors = item.authors().iter().map(|x| format!("{} <{:?}>", x.name(), x.email())).collect::<Vec<String>>().join(", ");
+								let _summary = if let Some(sum) = item.summary() { sum.value.clone() } else { String::new() };
 								posts.insert(*date, Post{
 									uri,
-									title,
-									authors,
-									summary,
+									_title: item.title().to_string(),
+									_authors,
+									_summary,
 								});
 							};
 						},
@@ -318,7 +286,7 @@ impl Core {
 				if this_fetch.is_none() || *date > this_fetch.unwrap() {
 					this_fetch = Some(*date);
 				};
-				self.send( match &source.iv_hash {
+				self.tg.send( match &source.iv_hash {
 					Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
 					None => format!("{post_url}"),
 				}, Some(destination), Some(ParseMode::Html)).await.stack()?;
@@ -342,7 +310,7 @@ impl Core {
 				if next_fetch < now {
 					if let (Some(owner), Some(source_id), last_scrape) = (row.owner, row.source_id, row.last_scrape) {
 						let clone = Core {
-							owner_chat: ChatPeerId::from(owner),
+							tg: self.tg.with_owner(owner),
 							..self.clone()
 						};
 						let source = {
@@ -354,11 +322,10 @@ impl Core {
 							}
 						};
 						smol::spawn(Compat::new(async move {
-							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await {
-								if let Err(err) = clone.send(&format!("🛑 {source}\n{}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
-									eprintln!("Check error: {err}");
-									// clone.disable(&source_id, owner).await.unwrap();
-								};
+							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await
+								&& let Err(err) = clone.tg.send(&format!("🛑 {source}\n{}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await
+							{
+								eprintln!("Check error: {err}");
 							};
 						})).detach();
 					}
@@ -383,27 +350,27 @@ impl Core {
 
 impl UpdateHandler for Core {
 	async fn handle (&self, update: Update) {
-		if let UpdateType::Message(msg) = update.update_type {
-			if let Ok(cmd) = Command::try_from(msg) {
-				let msg = cmd.get_message();
-				let words = cmd.get_args();
-				let command = cmd.get_name();
-				let res = match command {
-					"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
-					"/start" => command::start(self, msg).await,
-					"/list" => command::list(self, msg).await,
-					"/add" | "/update" => command::update(self, command, msg, words).await,
-					any => Err(anyhow!("Unknown command: {any}")),
-				};
-				if let Err(err) = res {
-					if let Err(err2) = self.send(format!("\\#error\n```\n{err}\n```"),
-						Some(msg.chat.get_id()),
-						Some(ParseMode::MarkdownV2)
-					).await{
-						dbg!(err2);
-					};
-				}
+		if let UpdateType::Message(msg) = update.update_type 
+			&& let Ok(cmd) = Command::try_from(msg)
+		{
+			let msg = cmd.get_message();
+			let words = cmd.get_args();
+			let command = cmd.get_name();
+			let res = match command {
+				"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
+				"/start" => command::start(self, msg).await,
+				"/list" => command::list(self, msg).await,
+				"/add" | "/update" => command::update(self, command, msg, words).await,
+				any => Err(anyhow!("Unknown command: {any}")),
 			};
+			if let Err(err) = res 
+				&& let Err(err2) = self.tg.send(format!("\\#error\n```\n{err}\n```"),
+					Some(msg.chat.get_id()),
+					Some(ParseMode::MarkdownV2)
+				).await
+			{
+				dbg!(err2);
+			}
 		};
 	}
 }
