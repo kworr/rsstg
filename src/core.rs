@@ -166,22 +166,33 @@ impl Core {
 		Ok(core)
 	}
 
-	/// Fetches the feed for a source, sends any newly discovered posts to the appropriate chat, and records them in the database.
+	/// Fetches a feed for the given source, sends any newly discovered posts to the configured chat,
+	/// and records them in the database so they are not reposted.
 	///
-	/// This acquires a per-source guard to prevent concurrent checks for the same `id`. If a check is already running for
-	/// the given `id`, the function returns an error. If `last_scrape` is provided, it is sent as the `If-Modified-Since`
-	/// header to the feed request. The function parses RSS or Atom feeds, sends unseen post URLs to either the source's
-	/// channel (when `real` is true) or the source owner (when `real` is false), and persists posted entries so they are
-	/// not reposted later.
+	/// This acquires a per-source guard to prevent concurrent checks for the same `id`. If a check is
+	/// already running for `id`, the call fails. If `last_scrape` is provided it is sent as the
+	/// `If-Modified-Since` header on the HTTP request. When `real` is `true` posts are sent to the
+	/// source's channel; when `false` they are sent to the source owner.
 	///
-	/// Parameters:
+	/// # Parameters
+	///
 	/// - `id`: Identifier of the source to check.
-	/// - `real`: When `true`, send posts to the source's channel; when `false`, send to the source owner.
-	/// - `last_scrape`: Optional timestamp used to set the `If-Modified-Since` header for the HTTP request.
+	/// - `real`: Send posts to the source channel when `true`, otherwise send to the source owner.
+	/// - `last_scrape`: Optional timestamp used for the `If-Modified-Since` header to avoid re-downloading unchanged content.
 	///
 	/// # Returns
 	///
-	/// `Posted: N` where `N` is the number of posts processed and sent.
+	/// A `String` of the form `Posted: N` where `N` is the number of posts that were sent and recorded.
+	///
+	/// # Examples
+	///
+	/// ```no_run
+	/// # use chrono::Local;
+	/// # async fn example(core: &crate::Core) -> Result<(), anyhow::Error> {
+	/// let result = core.check(42, true, Some(Local::now())).await?;
+	/// assert!(result.starts_with("Posted: "));
+	/// # Ok(()) }
+	/// ```
 	pub async fn check (&self, id: i32, real: bool, last_scrape: Option<DateTime<Local>>) -> Result<String> {
 		let mut posted: i32 = 0;
 		let mut conn = self.db.begin().await.stack()?;
@@ -298,11 +309,25 @@ impl Core {
 		Ok(format!("Posted: {posted}"))
 	}
 
-	/// Determine the delay until the next scheduled fetch and spawn background checks for any overdue sources.
+	/// Determine how long to wait until the next scheduled fetch and spawn checks for overdue sources.
 	///
-	/// This scans the database queue, spawns background tasks to run checks for sources whose `next_fetch`
-	/// is in the past (each task uses a Core clone with the appropriate owner), and computes the shortest
-	/// duration until the next `next_fetch`.
+	/// Scans the database queue for sources whose `next_fetch` is earlier than the current time,
+	/// spawns a background task to run `check` for each overdue source (each task uses a `Core` clone
+	/// with the appropriate owner), and returns the shortest duration until the next non-overdue fetch.
+	/// If there are no future fetches scheduled, a default of one minute is returned.
+	///
+	/// # Returns
+	///
+	/// The duration to wait until the next scheduled fetch.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// // Run the autofetch once and assert it returns a positive duration.
+	/// // `core` must be an initialised `Core` instance.
+	/// let dur = smol::block_on(core.autofetch()).unwrap();
+	/// assert!(dur.as_secs() > 0);
+	/// ```
 	async fn autofetch(&self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();

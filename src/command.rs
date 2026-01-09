@@ -24,16 +24,38 @@ lazy_static! {
 }
 
 /// Sends an informational message to the message's chat linking to the bot help channel.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use crate::{Core, Message};
+/// # async fn example(core: &Core, msg: &Message) {
+/// start(core, msg).await.unwrap();
+/// # }
+/// ```
 pub async fn start (core: &Core, msg: &Message) -> Result<()> {
 	core.tg.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
 		Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
 	Ok(())
 }
 
-/// Send the sender's subscription list to the chat.
+/// Send the message sender's subscription list to the chat.
 ///
-/// Retrieves the message sender's user ID, obtains their subscription list from `core`,
-/// and sends the resulting reply into the message chat using MarkdownV2.
+/// Looks up the sender's user ID, fetches their subscription list from `core`,
+/// and sends the resulting reply to the message chat formatted as MarkdownV2.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use crate::{Core, Message};
+/// # #[tokio::main]
+/// # async fn main() -> crate::Result<()> {
+/// let core: Core = unimplemented!();
+/// let msg: Message = unimplemented!();
+/// list(&core, &msg).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
@@ -42,18 +64,49 @@ pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	Ok(())
 }
 
-/// Handle channel-management commands that operate on a single numeric source ID.
+/// Handle a single-number channel-management command and reply to the chat.
+
 ///
-/// This validates that exactly one numeric argument is provided, performs the requested
-/// operation (check, clean, enable, delete, disable) against the database or core,
-/// and sends the resulting reply to the chat.
+
+/// Validates that exactly one numeric argument is provided, executes the requested
+
+/// operation ("/check", "/clean", "/enable", "/delete", "/disable") against the
+
+/// database or core, and sends the resulting reply into the originating chat.
+
+/// If the argument parsing or permission checks fail, an explanatory message is sent.
+
 ///
+
 /// # Parameters
+
 ///
-/// - `core`: application core containing database and Telegram clients.
-/// - `command`: command string (e.g. "/check", "/clean", "/enable", "/delete", "/disable").
-/// - `msg`: incoming Telegram message that triggered the command; used to determine sender and chat.
-/// - `words`: command arguments; expected to contain exactly one element that parses as a 32-bit integer.
+
+/// - `command`: command string, one of "/check", "/clean", "/enable", "/delete", "/disable".
+
+/// - `words`: command arguments; expected to contain exactly one element that parses as an `i32`.
+
+///
+
+/// # Examples
+
+///
+
+/// ```no_run
+
+/// # use your_crate::{command, Core};
+
+/// # use tgbot::types::Message;
+
+/// # async fn example(core: &Core, msg: &Message) {
+
+/// let args = vec!["42".to_string()];
+
+/// let _ = command(core, "/check", msg, &args).await;
+
+/// # }
+
+/// ```
 pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let mut conn = core.db.begin().await.stack()?;
 	let sender = msg.sender.get_user_id()
@@ -78,17 +131,27 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 	Ok(())
 }
 
-/// Validate command arguments, check permissions and update or add a channel feed configuration in the database.
+/// Validate arguments, verify permissions and create or update a channel feed configuration.
 ///
-/// This function parses and validates parameters supplied by a user command (either "/update <id> ..." or "/add ..."),
-/// verifies the channel username and feed URL, optionally validates an IV hash and a replacement regexp,
-/// ensures both the bot and the command sender are administrators of the target channel, and performs the database update.
+/// Accepts either `"/add"` or `"/update <source_id>"` as `command`. For `"/add"` the expected `words` form is:
+/// `channel url [iv_hash|'-'] [url_re|'-']`. For `"/update"` the first word must be a numeric `source_id` followed by
+/// the same parameters. The function validates the channel username and feed URL, optionally validates an IV hash and a
+/// replacement regexp, ensures both the bot and the command sender are administrators of the target channel, persists
+/// the new or updated feed configuration to the database, and sends the resulting status message back to the command
+/// chat.
 ///
-/// # Parameters
+/// # Examples
 ///
-/// - `command` — the invoked command, expected to be either `"/update"` (followed by a numeric source id) or `"/add"`.
-/// - `msg` — the incoming Telegram message; used to derive the command sender and target chat id for the reply.
-/// - `words` — the command arguments: for `"/add"` expected `channel url [iv_hash|'-'] [url_re|'-']`; for `"/update"` the first element must be a numeric `source_id` followed by the same parameters.
+/// ```no_run
+/// # async fn example(core: &crate::Core, msg: &crate::Message) -> crate::Result<()> {
+/// let words = [ "@example_channel".to_string(),
+///               "https://example.org/feed.xml".to_string(),
+///               "-".to_string(), // no iv_hash
+///               "-".to_string()  // no url_re
+/// ];
+/// crate::command::update(core, "/add", msg, &words).await?;
+/// # Ok(()) }
+/// ```
 pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;

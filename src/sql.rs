@@ -138,6 +138,28 @@ impl Conn {
 		}
 	}
 
+	/// Enable a source owned by the given owner.
+	///
+	/// Attempts to set `enabled = true` for the source with `source_id` if it belongs to `owner`.
+	///
+	/// # Parameters
+	///
+	/// * `owner` - Identifier of the owner who must own the source.
+	///
+	/// # Returns
+	///
+	/// `Ok("Source enabled.")` if a single row was updated, `Ok("Source not found.")` if no matching row was found, or an `Err` if a database error occurs.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// // Assume `conn` is a `Conn` with an active transaction/connection.
+	/// # async fn doc_example(mut conn: crate::db::Conn) -> Result<(), Box<dyn std::error::Error>> {
+	/// let res = conn.enable(42, 1001i64).await?;
+	/// assert!(res == "Source enabled." || res == "Source not found.");
+	/// # Ok(())
+	/// # }
+	/// ```
 	pub async fn enable <I> (&mut self, source_id: i32, owner: I) -> Result<&str>
 	where I: Into<i64> {
 		match sqlx::query("update rsstg_source set enabled = true where source_id = $1 and owner = $2")
@@ -150,14 +172,18 @@ impl Conn {
 		}
 	}
 
-	/// Checks whether a post with the given URL exists for the specified source.
+	/// Check whether a post with the given URL exists for the specified source.
 	///
-	/// # Parameters
-	/// - `post_url`: The URL of the post to check.
-	/// - `id`: The source identifier (converted to `i64`).
+	/// Returns `true` if a post with `post_url` exists for the source identified by `id`, `false` otherwise.
 	///
-	/// # Returns
-	/// `true` if a post with the URL exists for the source, `false` otherwise.
+	/// # Examples
+	///
+	/// ```no_run
+	/// # async fn example(mut conn: crate::Conn) {
+	/// let exists = conn.exists("https://example.com/post", 42).await.unwrap();
+	/// // `exists` is a `bool` indicating presence of the post
+	/// # }
+	/// ```
 	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<bool>
 	where I: Into<i64> {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")

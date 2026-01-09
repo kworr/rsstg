@@ -22,15 +22,34 @@ pub struct Tg {
 }
 
 impl Tg {
-	/// Construct a new `Tg` instance from configuration.
+	/// Create a new `Tg` configured from application settings.
 	///
-	/// The `settings` must provide the following keys:
-	///  - `"api_key"` (string),
-	///  - `"owner"` (integer chat id),
-	///  - `"api_gateway"` (string).
+	/// The `settings` must contain the following keys:
+	/// - `"api_key"`: bot API token as a string.
+	/// - `"owner"`: owner chat id as an integer.
+	/// - `"api_gateway"`: base URL of the Telegram API gateway as a string.
 	///
-	/// The function initialises the client, configures the gateway and fetches the bot identity
-	/// before returning the constructed `Tg`.
+	/// The function initialises an HTTP client configured with the provided gateway,
+	/// fetches the bot identity and returns a `Tg` instance ready for use.
+	///
+	/// # Examples
+	///
+	/// ```no_run
+	/// # use config::Config;
+	/// # use crate::tg_bot::Tg;
+	/// # async fn _example() -> Result<(), Box<dyn std::error::Error>> {
+	/// let mut settings = Config::default();
+	/// settings.set("api_key", "BOT_TOKEN")?;
+	/// settings.set("owner", 12345_i64)?;
+	/// settings.set("api_gateway", "https://api.telegram.org")?;
+	///
+	/// let tg = Tg::new(&settings).await?;
+	/// # Ok(()) }
+	/// ```
+	///
+	/// # Returns
+	///
+	/// `Ok(Tg)` containing the initialised bot client and identity on success, or an error stacked via `stack()` on failure.
 	pub async fn new (settings: &config::Config) -> Result<Tg> {
 		let api_key = settings.get_string("api_key").stack()?;
 
@@ -46,10 +65,21 @@ impl Tg {
 		})
 	}
 
-	/// Send a text message to a chat, using an optional target and parse mode.
+	/// Send a text message to the specified chat.
+	///
+	/// If `target` is `None`, the message is sent to the configured owner. If `mode` is `None`, `ParseMode::Html` is used.
 	///
 	/// # Returns
+	///
 	/// The sent `Message` on success.
+	///
+	/// # Examples
+	///
+	/// ```ignore
+	/// // async context required
+	/// let sent = tg.send("Hello, world!", None, None).await.unwrap();
+	/// println!("sent message id = {}", sent.message_id);
+	/// ```
 	pub async fn send <S>(&self, msg: S, target: Option<ChatPeerId>, mode: Option<ParseMode>) -> Result<Message>
 	where S: Into<String> {
 		let msg = msg.into();
@@ -62,13 +92,25 @@ impl Tg {
 		).await.stack()
 	}
 
-	/// Create a copy of this `Tg` with the owner replaced by the given chat ID.
+	/// Return a copy of this `Tg` with its owner set to the supplied chat identifier.
+	///
+	/// The supplied `owner` is converted into an `i64` and wrapped as a `ChatPeerId`.
 	///
 	/// # Parameters
-	/// - `owner`: The Telegram chat identifier to set as the new owner (expressed as an `i64`).
+	///
+	/// - `owner`: A value convertible into an `i64` representing the Telegram chat ID to set as the new owner.
 	///
 	/// # Returns
-	/// A new `Tg` instance identical to the original except its `owner` field is set to the provided chat ID.
+	///
+	/// A `Tg` instance identical to the original except that its `owner` field is replaced by the provided chat ID.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// // assuming `tg` is an existing `Tg`
+	/// let new_tg = tg.with_owner(123456789i64);
+	/// assert_eq!(new_tg.owner, ChatPeerId::from(123456789i64));
+	/// ```
 	pub fn with_owner <O>(&self, owner: O) -> Tg
 	where O: Into<i64> {
 		Tg {

@@ -15,6 +15,17 @@ use stacked_errors::{
 };
 use tgbot::handler::LongPoll;
 
+/// Program entry point that initialises and runs the asynchronous bot core and its Telegram long-poll loop.
+///
+/// Returns `Ok(())` on successful completion.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Invoke the binary entry point; the function initialises the bot and starts long-polling.
+/// let result = crate::main();
+/// assert!(result.is_ok());
+/// ```
 fn main () -> Result<()> {
 	smol::block_on(Compat::new(async {
 		async_main().await.unwrap();
@@ -25,8 +36,15 @@ fn main () -> Result<()> {
 
 /// Initialises configuration and the bot core, then runs the Telegram long-poll loop.
 ///
-/// This function loads configuration (with a default API gateway), constructs the application
-/// core, and starts the long-polling loop that handles incoming Telegram updates.
+/// Loads configuration (setting a default `api_gateway`), constructs the application core,
+/// and starts the long-polling loop that handles incoming Telegram updates.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smol::block_on;
+/// block_on(crate::async_main()).unwrap();
+/// ```
 async fn async_main () -> Result<()> {
 	let settings = config::Config::builder()
 		.set_default("api_gateway", "https://api.telegram.org").stack()?
