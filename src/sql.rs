@@ -150,17 +150,22 @@ impl Conn {
 		}
 	}
 
+	/// Checks whether a post with the given URL exists for the specified source.
+	///
+	/// # Parameters
+	/// - `post_url`: The URL of the post to check.
+	/// - `id`: The source identifier (converted to `i64`).
+	///
+	/// # Returns
+	/// `true` if a post with the URL exists for the source, `false` otherwise.
 	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<bool>
 	where I: Into<i64> {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
 			.bind(post_url)
 			.bind(id.into())
 			.fetch_one(&mut *self.0).await.stack()?;
-		if let Some(exists) = row.try_get("exists").stack()? {
-			Ok(exists)
-		} else {
-			bail!("Database error: can't check whether post exists.");
-		}
+		row.try_get("exists")
+			.stack_err("Database error: can't check whether post exists.")
 	}
 
 	/// Get all pending events for (now + 1 minute)

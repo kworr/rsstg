@@ -125,7 +125,7 @@ impl Core {
 	/// Create a Core instance from configuration and start its background autofetch loop.
 	///
 	/// The provided `settings` must include:
-	/// - `owner` (integer): chat id to use as the default destination,
+	/// - `owner` (integer): default chat id to use as the owner/destination,
 	/// - `api_key` (string): Telegram bot API key,
 	/// - `api_gateway` (string): Telegram API gateway host,
 	/// - `pg` (string): PostgreSQL connection string,
@@ -298,6 +298,11 @@ impl Core {
 		Ok(format!("Posted: {posted}"))
 	}
 
+	/// Determine the delay until the next scheduled fetch and spawn background checks for any overdue sources.
+	///
+	/// This scans the database queue, spawns background tasks to run checks for sources whose `next_fetch`
+	/// is in the past (each task uses a Core clone with the appropriate owner), and computes the shortest
+	/// duration until the next `next_fetch`.
 	async fn autofetch(&self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();
@@ -349,6 +354,12 @@ impl Core {
 }
 
 impl UpdateHandler for Core {
+	/// Dispatches an incoming Telegram update to a matching command handler and reports handler errors to the originating chat.
+	///
+	/// This method inspects the update; if it contains a message that can be parsed as a bot command,
+	/// it executes the corresponding command handler. If the handler returns an error, the error text
+	/// is sent back to the message's chat using MarkdownV2 formatting. Unknown commands produce an erro
+	/// which is also reported to the chat.
 	async fn handle (&self, update: Update) {
 		if let UpdateType::Message(msg) = update.update_type 
 			&& let Ok(cmd) = Command::try_from(msg)
@@ -371,6 +382,6 @@ impl UpdateHandler for Core {
 			{
 				dbg!(err2);
 			}
-		};
+		} // TODO: debug log for skipped updates?;
 	}
 }

@@ -22,6 +22,15 @@ pub struct Tg {
 }
 
 impl Tg {
+	/// Construct a new `Tg` instance from configuration.
+	///
+	/// The `settings` must provide the following keys:
+	///  - `"api_key"` (string),
+	///  - `"owner"` (integer chat id),
+	///  - `"api_gateway"` (string).
+	///
+	/// The function initialises the client, configures the gateway and fetches the bot identity
+	/// before returning the constructed `Tg`.
 	pub async fn new (settings: &config::Config) -> Result<Tg> {
 		let api_key = settings.get_string("api_key").stack()?;
 
@@ -37,6 +46,10 @@ impl Tg {
 		})
 	}
 
+	/// Send a text message to a chat, using an optional target and parse mode.
+	///
+	/// # Returns
+	/// The sent `Message` on success.
 	pub async fn send <S>(&self, msg: S, target: Option<ChatPeerId>, mode: Option<ParseMode>) -> Result<Message>
 	where S: Into<String> {
 		let msg = msg.into();
@@ -49,9 +62,17 @@ impl Tg {
 		).await.stack()
 	}
 
-	pub fn with_owner (&self, owner: i64) -> Tg {
+	/// Create a copy of this `Tg` with the owner replaced by the given chat ID.
+	///
+	/// # Parameters
+	/// - `owner`: The Telegram chat identifier to set as the new owner (expressed as an `i64`).
+	///
+	/// # Returns
+	/// A new `Tg` instance identical to the original except its `owner` field is set to the provided chat ID.
+	pub fn with_owner <O>(&self, owner: O) -> Tg
+	where O: Into<i64> {
 		Tg {
-			owner: ChatPeerId::from(owner),
+			owner: ChatPeerId::from(owner.into()),
 			..self.clone()
 		}
 	}

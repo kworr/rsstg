@@ -23,6 +23,10 @@ fn main () -> Result<()> {
 	Ok(())
 }
 
+/// Initialises configuration and the bot core, then runs the Telegram long-poll loop.
+///
+/// This function loads configuration (with a default API gateway), constructs the application
+/// core, and starts the long-polling loop that handles incoming Telegram updates.
 async fn async_main () -> Result<()> {
 	let settings = config::Config::builder()
 		.set_default("api_gateway", "https://api.telegram.org").stack()?
