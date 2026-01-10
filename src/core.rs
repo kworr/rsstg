@@ -358,7 +358,7 @@ impl UpdateHandler for Core {
 	///
 	/// This method inspects the update; if it contains a message that can be parsed as a bot command,
 	/// it executes the corresponding command handler. If the handler returns an error, the error text
-	/// is sent back to the message's chat using MarkdownV2 formatting. Unknown commands produce an erro
+	/// is sent back to the message's chat using MarkdownV2 formatting. Unknown commands produce an error
 	/// which is also reported to the chat.
 	async fn handle (&self, update: Update) {
 		if let UpdateType::Message(msg) = update.update_type 

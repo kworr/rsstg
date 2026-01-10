@@ -1,3 +1,7 @@
+use serde::{
+	Deserialize,
+	Serialize,
+};
 use stacked_errors::{
 	Result,
 	StackableErr,
@@ -8,11 +12,27 @@ use tgbot::{
 		Bot,
 		ChatPeerId,
 		GetBot,
+		InlineKeyboardButton,
+		InlineKeyboardMarkup,
 		Message,
 		ParseMode,
 		SendMessage,
 	},
 };
+
+#[derive(Serialize, Deserialize, Debug)]
+enum Callback {
+	// List all feeds (version, name to show)
+	List(u8, String),
+}
+
+fn get_kb (cb: &Callback) -> Result<InlineKeyboardMarkup> {
+	let mark = InlineKeyboardMarkup::from(vec![vec![
+		InlineKeyboardButton::for_callback_data("1",
+			toml::to_string(&Callback::List(0,"xxx".to_owned())).stack()?),
+	]]);
+	Ok(mark)
+}
 
 #[derive(Clone)]
 pub struct Tg {

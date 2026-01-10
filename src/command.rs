@@ -72,7 +72,7 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 			},
 		}
 	} else {
-		"This command needs exacly one number.".into()
+		"This command needs exactly one number.".into()
 	};
 	core.tg.send(reply, Some(msg.chat.get_id()), None).await.stack()?;
 	Ok(())
