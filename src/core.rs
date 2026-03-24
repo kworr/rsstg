@@ -384,7 +384,7 @@ impl Core {
 impl UpdateHandler for Core {
 	async fn handle (&self, update: Update) {
 		if let UpdateType::Message(msg) = update.update_type {
-			if let Ok(cmd) = Command::try_from(msg) {
+			if let Ok(cmd) = Command::try_from(*msg) {
 				let msg = cmd.get_message();
 				let words = cmd.get_args();
 				let command = cmd.get_name();
