@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.5.3"
+version = "0.6.0"
 authors = [ "arcade@b1t.name" ]
 edition = "2024"
 license = "0BSD"
@@ -11,7 +11,7 @@ async-compat = "0.2.5"
 atom_syndication = { version = "0.12.4", features = [ "with-serde" ] }
 chrono = "0.4.38"
 config = { version = "0.15", default-features = false, features = [ "toml" ] }
-tgbot = "0.41"
+tgbot = "0.43"
 futures = "0.3.30"
 futures-util = "0.3.30"
 lazy_static = "1.5.0"
@@ -23,7 +23,8 @@ serde = "1.0.228"
 smol = "2.0.2"
 stacked_errors = "0.7.1"
 sqlx = { version = "0.8", features = [ "postgres", "runtime-tokio-rustls", "chrono", "macros" ], default-features = false }
-toml = "0.9.11+spec-1.1.0"
+toml = "1.1.0"
+ttl_cache = "0.5.1"
 url = "2.5.8"
 
 [profile.release]

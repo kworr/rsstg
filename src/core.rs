@@ -1,16 +1,22 @@
 use crate::{
+	Arc,
 	command,
+	Mutex,
 	sql::Db,
-	tg_bot::Tg,
+	tg_bot::{
+		MyMessage,
+		Tg,
+	},
 };
 
 use std::{
 	borrow::Cow,
 	collections::{
 		BTreeMap,
+		HashMap,
 		HashSet,
 	},
-	sync::Arc,
+	time::Duration,
 };
 
 use async_compat::Compat;
@@ -21,27 +27,24 @@ use chrono::{
 use lazy_static::lazy_static;
 use regex::Regex;
 use reqwest::header::LAST_MODIFIED;
-use smol::{
-	Timer,
-	lock::Mutex,
-};
-use tgbot::{
-	handler::UpdateHandler,
-	types::{
-		ChatPeerId,
-		Command,
-		ParseMode,
-		Update,
-		UpdateType,
-		UserPeerId,
-	},
-};
+use smol::Timer;
 use stacked_errors::{
 	Result,
 	StackableErr,
 	anyhow,
 	bail,
 };
+use tgbot::{
+	handler::UpdateHandler,
+	types::{
+		ChatPeerId,
+		Command,
+		Update,
+		UpdateType,
+		UserPeerId,
+	},
+};
+use ttl_cache::TtlCache;
 
 lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
@@ -106,10 +109,14 @@ impl Drop for Token {
 	}
 }
 
+type FeedList = HashMap<i32, String>;
+type UserCache = TtlCache<i64, Arc<Mutex<FeedList>>>;
+
 #[derive(Clone)]
 pub struct Core {
 	pub tg: Tg,
 	pub db: Db,
+	pub feeds: Arc<Mutex<UserCache>>,
 	running: Arc<Mutex<HashSet<i32>>>,
 	http_client: reqwest::Client,
 }
@@ -144,6 +151,7 @@ impl Core {
 		let core = Core {
 			tg: Tg::new(&settings).await.stack()?,
 			db: Db::new(&settings.get_string("pg").stack()?)?,
+			feeds: Arc::new(Mutex::new(TtlCache::new(10000))),
 			running: Arc::new(Mutex::new(HashSet::new())),
 			http_client: client.build().stack()?,
 		};
@@ -153,7 +161,7 @@ impl Core {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
-						if let Err(err) = clone.tg.send(format!("🛑 {err}"), None, None).await {
+						if let Err(err) = clone.tg.send(MyMessage::html(format!("🛑 {err}"))).await {
 							eprintln!("Autofetch error: {err:?}");
 						};
 						std::time::Duration::from_secs(60)
@@ -286,10 +294,10 @@ impl Core {
 				if this_fetch.is_none() || *date > this_fetch.unwrap() {
 					this_fetch = Some(*date);
 				};
-				self.tg.send( match &source.iv_hash {
+				self.tg.send(MyMessage::html_to(match &source.iv_hash {
 					Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
 					None => format!("{post_url}"),
-				}, Some(destination), Some(ParseMode::Html)).await.stack()?;
+				}, destination)).await.stack()?;
 				conn.add_post(id, date, &post_url).await.stack()?;
 				posted += 1;
 			};
@@ -328,7 +336,7 @@ impl Core {
 						};
 						smol::spawn(Compat::new(async move {
 							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await
-								&& let Err(err) = clone.tg.send(&format!("🛑 {source}\n{}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await
+								&& let Err(err) = clone.tg.send(MyMessage::text(format!("🛑 {source}\n{}", encode(&err.to_string())))).await
 							{
 								eprintln!("Check error: {err}");
 							};
@@ -342,6 +350,7 @@ impl Core {
 		delay.to_std().stack()
 	}
 
+	/// Displays full list of managed channels for specified user
 	pub async fn list (&self, owner: UserPeerId) -> Result<String> {
 		let mut reply: Vec<String> = vec![];
 		reply.push("Channels:".into());
@@ -350,6 +359,60 @@ impl Core {
 			reply.push(row.to_string());
 		};
 		Ok(reply.join("\n\n"))
+	}
+
+	/// Returns current cached list of feed for requested user, or loads data from database
+	pub async fn get_feeds (&self, owner: i64) -> Result<Arc<Mutex<HashMap<i32, String>>>> {
+		let mut conn = self.db.begin().await.stack()?;
+		let mut feeds = self.feeds.lock_arc().await;
+		Ok(match feeds.get(&owner) {
+			None => {
+				let feed_list = conn.get_feeds(owner).await.stack()?;
+				let mut map = HashMap::new();
+				for feed in feed_list {
+					map.insert(feed.source_id, feed.channel);
+				};
+				let res = Arc::new(Mutex::new(map));
+				feeds.insert(owner, res.clone(), Duration::from_secs(60 * 60 * 3));
+				res
+			},
+			Some(res) => res.clone(),
+		})
+	}
+
+	/// Adds feed to cached list
+	pub async fn add_feed (&self, owner: i64, source_id: i32, channel: String) -> Result<()> {
+		let mut inserted = true;
+		{
+			let mut feeds = self.feeds.lock_arc().await;
+			if let Some(feed) = feeds.get_mut(&owner) {
+				let mut feed = feed.lock_arc().await;
+				feed.insert(source_id, channel);
+			} else {
+				inserted = false;
+			}
+		}
+		if !inserted {
+			self.get_feeds(owner).await.stack()?;
+		}
+		Ok(())
+	}
+
+	/// Removes feed from cached list
+	pub async fn rm_feed (&self, owner: i64, source_id: &i32) -> Result<()> {
+		let mut dropped = false;
+		{
+			let mut feeds = self.feeds.lock_arc().await;
+			if let Some(feed) = feeds.get_mut(&owner) {
+				let mut feed = feed.lock_arc().await;
+				feed.remove(source_id);
+				dropped = true;
+			}
+		}
+		if !dropped {
+			self.get_feeds(owner).await.stack()?;
+		}
+		Ok(())
 	}
 }
 
@@ -362,7 +425,7 @@ impl UpdateHandler for Core {
 	/// which is also reported to the chat.
 	async fn handle (&self, update: Update) {
 		if let UpdateType::Message(msg) = update.update_type 
-			&& let Ok(cmd) = Command::try_from(msg)
+			&& let Ok(cmd) = Command::try_from(*msg)
 		{
 			let msg = cmd.get_message();
 			let words = cmd.get_args();
@@ -371,14 +434,15 @@ impl UpdateHandler for Core {
 				"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
 				"/start" => command::start(self, msg).await,
 				"/list" => command::list(self, msg).await,
+				"/test" => command::test(self, msg).await,
 				"/add" | "/update" => command::update(self, command, msg, words).await,
 				any => Err(anyhow!("Unknown command: {any}")),
 			};
 			if let Err(err) = res 
-				&& let Err(err2) = self.tg.send(format!("\\#error\n```\n{err}\n```"),
-					Some(msg.chat.get_id()),
-					Some(ParseMode::MarkdownV2)
-				).await
+				&& let Err(err2) = self.tg.send(MyMessage::text_to(
+					format!("\\#error\n```\n{err}\n```"),
+					msg.chat.get_id(),
+				)).await
 			{
 				dbg!(err2);
 			}

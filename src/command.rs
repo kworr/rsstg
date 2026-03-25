@@ -1,4 +1,11 @@
-use crate::core::Core;
+use crate::{
+	core::Core,
+	tg_bot::{
+		Callback,
+		MyMessage,
+		get_kb,
+	},
+};
 
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -14,7 +21,6 @@ use tgbot::types::{
 	GetChat,
 	GetChatAdministrators,
 	Message,
-	ParseMode::MarkdownV2,
 };
 use url::Url;
 
@@ -25,8 +31,10 @@ lazy_static! {
 
 /// Sends an informational message to the message's chat linking to the bot help channel.
 pub async fn start (core: &Core, msg: &Message) -> Result<()> {
-	core.tg.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
-		Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
+	core.tg.send(MyMessage::text_to(
+		"We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
+		msg.chat.get_id()
+	)).await.stack()?;
 	Ok(())
 }
 
@@ -38,7 +46,16 @@ pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
 	let reply = core.list(sender).await.stack()?;
-	core.tg.send(reply, Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
+	core.tg.send(MyMessage::text_to(reply, msg.chat.get_id())).await.stack()?;
+	Ok(())
+}
+
+pub async fn test (core: &Core, msg: &Message) -> Result<()> {
+	let sender: i64 = msg.sender.get_user_id()
+		.stack_err("Ignoring unreal users.")?.into();
+	let feeds = core.get_feeds(sender).await.stack()?;
+	let kb = get_kb(&Callback::list("", 0), feeds).await.stack()?;
+	core.tg.send(MyMessage::html_to_kb(format!("List of feeds owned by {:?}:", msg.sender), msg.chat.get_id(), kb)).await.stack()?;
 	Ok(())
 }
 
@@ -66,7 +83,10 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 					.context("Channel check failed.")?.into(),
 				"/clean" => conn.clean(number, sender).await.stack()?,
 				"/enable" => conn.enable(number, sender).await.stack()?.into(),
-				"/delete" => conn.delete(number, sender).await.stack()?,
+				"/delete" => {
+					core.rm_feed(sender.into(), &number).await.stack()?;
+					conn.delete(number, sender).await.stack()?
+				}
 				"/disable" => conn.disable(number, sender).await.stack()?.into(),
 				_ => bail!("Command {command} {words:?} not handled."),
 			},
@@ -74,7 +94,7 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 	} else {
 		"This command needs exactly one number.".into()
 	};
-	core.tg.send(reply, Some(msg.chat.get_id()), None).await.stack()?;
+	core.tg.send(MyMessage::html_to(reply, msg.chat.get_id())).await.stack()?;
 	Ok(())
 }
 
@@ -88,7 +108,8 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 ///
 /// - `command` — the invoked command, expected to be either `"/update"` (followed by a numeric source id) or `"/add"`.
 /// - `msg` — the incoming Telegram message; used to derive the command sender and target chat id for the reply.
-/// - `words` — the command arguments: for `"/add"` expected `channel url [iv_hash|'-'] [url_re|'-']`; for `"/update"` the first element must be a numeric `source_id` followed by the same parameters.
+/// - `words` — the command arguments: for `"/add"` expected `channel url [iv_hash|'-'] [url_re|'-']`; for `"/update"`
+///   the first element must be a numeric `source_id` followed by the same parameters.
 pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
@@ -109,17 +130,6 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 		i_words.next().context(at_least)?,
 		i_words.next(),
 		i_words.next());
-	/*
-	let channel = match RE_USERNAME.captures(channel) {
-		Some(caps) => match caps.get(1) {
-			Some(data) => data.as_str(),
-			None => bail!("No string found in channel name"),
-		},
-		None => {
-			bail!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {channel:?}");
-		},
-	};
-	*/
 	if ! RE_USERNAME.is_match(channel) {
 		bail!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {channel:?}");
 	};
@@ -160,7 +170,7 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 		None => None,
 	};
 	let chat_id = ChatUsername::from(channel.as_ref());
-	let channel_id = core.tg.client.execute(GetChat::new(chat_id.clone())).await.stack_err("gettting GetChat")?.id;
+	let channel_id = core.tg.client.execute(GetChat::new(chat_id.clone())).await.stack_err("getting GetChat")?.id;
 	let chan_adm = core.tg.client.execute(GetChatAdministrators::new(chat_id)).await
 		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
@@ -184,6 +194,13 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 	if ! user { bail!("You should be admin on that channel."); };
 	let mut conn = core.db.begin().await.stack()?;
 	let update = conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await.stack()?;
-	core.tg.send(update, Some(msg.chat.get_id()), None).await.stack()?;
+	core.tg.send(MyMessage::html_to(update, msg.chat.get_id())).await.stack()?;
+	if command == "/add" {
+		if let Some(new_record) = conn.get_one_name(sender, channel).await.stack()? {
+			core.add_feed(sender.into(), new_record.source_id, new_record.channel).await.stack()?;
+		} else {
+			bail!("Failed to read data on freshly inserted source.");
+		}
+	};
 	Ok(())
 }

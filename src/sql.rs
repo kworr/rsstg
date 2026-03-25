@@ -1,10 +1,13 @@
+use crate::{
+	Arc,
+	Mutex,
+};
+
 use std::{
 	borrow::Cow,
 	fmt,
-	sync::Arc,
 };
 
-use smol::lock::Mutex;
 use chrono::{
 	DateTime,
 	FixedOffset,
@@ -47,6 +50,13 @@ impl fmt::Display for List {
 		}
 		Ok(())
 	}
+}
+
+/// One feed, used for caching and menu navigation
+#[derive(sqlx::FromRow, Debug)]
+pub struct Feed {
+	pub source_id: i32,
+	pub channel: String,
 }
 
 #[derive(sqlx::FromRow, Debug)]
@@ -168,6 +178,14 @@ impl Conn {
 			.stack_err("Database error: can't check whether post exists.")
 	}
 
+	pub async fn get_feeds <I>(&mut self, owner: I) -> Result<Vec<Feed>>
+	where I: Into<i64> {
+		let block: Vec<Feed> = sqlx::query_as("select source_id, channel from rsstg_source where owner = $1 order by source_id")
+			.bind(owner.into())
+			.fetch_all(&mut *self.0).await.stack()?;
+		Ok(block)
+	}
+
 	/// Get all pending events for (now + 1 minute)
 	pub async fn get_queue (&mut self) -> Result<Vec<Queue>> {
 		let block: Vec<Queue> = sqlx::query_as("select source_id, next_fetch, owner, last_scrape from rsstg_order natural left join rsstg_source where next_fetch < now() + interval '1 minute';")
@@ -175,7 +193,7 @@ impl Conn {
 		Ok(block)
 	}
 
-	pub async fn get_list <I> (&mut self, owner: I) -> Result<Vec<List>>
+	pub async fn get_list <I>(&mut self, owner: I) -> Result<Vec<List>>
 	where I: Into<i64> {
 		let source: Vec<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
 			.bind(owner.into())
@@ -188,6 +206,15 @@ impl Conn {
 		let source: Option<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 and source_id = $2")
 			.bind(owner.into())
 			.bind(id)
+			.fetch_optional(&mut *self.0).await.stack()?;
+		Ok(source)
+	}
+
+	pub async fn get_one_name <I> (&mut self, owner: I, name: &str) -> Result<Option<List>>
+	where I: Into<i64> {
+		let source: Option<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 and channel = $2")
+			.bind(owner.into())
+			.bind(name)
 			.fetch_optional(&mut *self.0).await.stack()?;
 		Ok(source)
 	}
@@ -227,7 +254,7 @@ impl Conn {
 				.bind(channel)
 				.bind(url_re)
 				.execute(&mut *self.0).await
-			{
+		{
 			Ok(_) => Ok(match update {
 				Some(_) => "Channel updated.",
 				None => "Channel added.",
