@@ -236,6 +236,7 @@ impl Conn {
 		Ok(())
 	}
 
+	#[allow(clippy::too_many_arguments)] // XXX at least for now…
 	pub async fn update <I> (&mut self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: I) -> Result<&str>
 	where I: Into<i64> {
 		match match update {

@@ -363,10 +363,10 @@ impl Core {
 
 	/// Returns current cached list of feed for requested user, or loads data from database
 	pub async fn get_feeds (&self, owner: i64) -> Result<Arc<Mutex<HashMap<i32, String>>>> {
-		let mut conn = self.db.begin().await.stack()?;
 		let mut feeds = self.feeds.lock_arc().await;
 		Ok(match feeds.get(&owner) {
 			None => {
+				let mut conn = self.db.begin().await.stack()?;
 				let feed_list = conn.get_feeds(owner).await.stack()?;
 				let mut map = HashMap::new();
 				for feed in feed_list {
@@ -392,6 +392,8 @@ impl Core {
 				inserted = false;
 			}
 		}
+		// in case insert failed - we miss the entry we needed to expand, reload everything from
+		// database
 		if !inserted {
 			self.get_feeds(owner).await.stack()?;
 		}
@@ -409,6 +411,7 @@ impl Core {
 				dropped = true;
 			}
 		}
+		// in case we failed to found feed we need to remove - just reload everything from database
 		if !dropped {
 			self.get_feeds(owner).await.stack()?;
 		}

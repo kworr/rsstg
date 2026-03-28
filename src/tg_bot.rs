@@ -74,27 +74,48 @@ pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<HashMap<i32, String>>>) -> 
 				(0, 6)
 			};
 			let mut i = 0;
-			for (id, name) in feeds.iter() {
-				if i < start { continue }
-				if i > end { break }
-				i += 1;
-				kb.push(vec![
-					InlineKeyboardButton::for_callback_data(
-						format!("{}. {}", id, name),
-						Callback::list("xxx", *page).to_string()), // XXX edit
-				])
-			}
 			if name.is_empty() {
-				// no name - reverting to pages, any unknown number means last page
-				kb.push(vec![
-					InlineKeyboardButton::for_callback_data("1",
-						Callback::list("xxx", 0).to_string()),
-				])
+				for (id, name) in feeds.iter() {
+					if i < start { continue }
+					if i > end { break }
+					i += 1;
+					kb.push(vec![
+						InlineKeyboardButton::for_callback_data(
+							format!("{}. {}", id, name),
+							Callback::list("xxx", *page).to_string()), // XXX edit
+					]);
+				}
 			} else {
-				kb.push(vec![
-					InlineKeyboardButton::for_callback_data("1",
-						Callback::list("xxx", 0).to_string()),
-				])
+				let mut found = false;
+				let mut first_page = None;
+				for (id, feed_name) in feeds.iter() {
+					if name == feed_name {
+						found = true;
+					}
+					i += 1;
+					kb.push(vec![
+						InlineKeyboardButton::for_callback_data(
+							format!("{}. {}", id, feed_name),
+							Callback::list("xxx", *page).to_string()), // XXX edit
+					]);
+					if i > end {
+						// page complete, if found we got the right page, if not - reset and
+						// continue.
+						if found {
+							break
+						} else {
+							if first_page.is_none() {
+								first_page = Some(kb);
+							}
+							kb = vec![];
+							i = 0
+						}
+					}
+				}
+				if !found {
+					// name not found, showing first page
+					kb = first_page.unwrap_or_default();
+				}
 			}
 			if long {
 				kb.push(vec![

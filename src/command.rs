@@ -55,7 +55,7 @@ pub async fn test (core: &Core, msg: &Message) -> Result<()> {
 		.stack_err("Ignoring unreal users.")?.into();
 	let feeds = core.get_feeds(sender).await.stack()?;
 	let kb = get_kb(&Callback::list("", 0), feeds).await.stack()?;
-	core.tg.send(MyMessage::html_to_kb(format!("List of feeds owned by {:?}:", msg.sender), msg.chat.get_id(), kb)).await.stack()?;
+	core.tg.send(MyMessage::html_to_kb(format!("List of feeds owned by {:?}:", msg.sender.get_user_username()), msg.chat.get_id(), kb)).await.stack()?;
 	Ok(())
 }
 
@@ -84,8 +84,9 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 				"/clean" => conn.clean(number, sender).await.stack()?,
 				"/enable" => conn.enable(number, sender).await.stack()?.into(),
 				"/delete" => {
+					let res = conn.delete(number, sender).await.stack()?;
 					core.rm_feed(sender.into(), &number).await.stack()?;
-					conn.delete(number, sender).await.stack()?
+					res
 				}
 				"/disable" => conn.disable(number, sender).await.stack()?.into(),
 				_ => bail!("Command {command} {words:?} not handled."),
