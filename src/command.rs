@@ -16,6 +16,7 @@ use stacked_errors::{
 	bail,
 };
 use tgbot::types::{
+	CallbackQuery,
 	ChatMember,
 	ChatUsername,
 	GetChat,
@@ -31,8 +32,8 @@ lazy_static! {
 
 /// Sends an informational message to the message's chat linking to the bot help channel.
 pub async fn start (core: &Core, msg: &Message) -> Result<()> {
-	core.tg.send(MyMessage::text_to(
-		"We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
+	core.tg.send(MyMessage::html_to(
+		"We are open. Probably. Visit <a href=\"https://t.me/rsstg_bot_help/3\">channel</a>) for details.",
 		msg.chat.get_id()
 	)).await.stack()?;
 	Ok(())
@@ -46,7 +47,7 @@ pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
 	let reply = core.list(sender).await.stack()?;
-	core.tg.send(MyMessage::text_to(reply, msg.chat.get_id())).await.stack()?;
+	core.tg.send(MyMessage::html_to(reply, msg.chat.get_id())).await.stack()?;
 	Ok(())
 }
 
@@ -54,8 +55,8 @@ pub async fn test (core: &Core, msg: &Message) -> Result<()> {
 	let sender: i64 = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?.into();
 	let feeds = core.get_feeds(sender).await.stack()?;
-	let kb = get_kb(&Callback::list("", 0), feeds).await.stack()?;
-	core.tg.send(MyMessage::html_to_kb(format!("List of feeds owned by {:?}:", msg.sender.get_user_username()), msg.chat.get_id(), kb)).await.stack()?;
+	let kb = get_kb(&Callback::menu(), feeds).await.stack()?;
+	core.tg.send(MyMessage::html_to_kb("Main menu:", msg.chat.get_id(), kb)).await.stack()?;
 	Ok(())
 }
 

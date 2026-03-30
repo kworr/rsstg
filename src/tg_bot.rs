@@ -1,11 +1,11 @@
 use crate::{
 	Arc,
 	Mutex,
+	core::FeedList,
 };
 
 use std::{
 	borrow::Cow,
-	collections::HashMap,
 	fmt,
 };
 
@@ -21,6 +21,7 @@ use stacked_errors::{
 use tgbot::{
 	api::Client,
 	types::{
+		AnswerCallbackQuery,
 		Bot,
 		ChatPeerId,
 		GetBot,
@@ -36,18 +37,34 @@ const CB_VERSION: u8 = 0;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Callback {
+	// Edit one feed (version, name)
+	Edit(u8, String),
 	// List all feeds (version, name to show, page number)
 	List(u8, String, u8),
+	// Show root menu (version)
+	Menu(u8),
 }
 
 impl Callback {
-	pub fn list (text: &str, page: u8) -> Callback {
-		Callback::List(CB_VERSION, text.to_owned(), page)
+	pub fn edit <S>(text: S) -> Callback
+	where S: Into<String> {
+		Callback::Edit(CB_VERSION, text.into())
+	}
+
+	pub fn list <S>(text: S, page: u8) -> Callback
+	where S: Into<String> {
+		Callback::List(CB_VERSION, text.into(), page)
+	}
+
+	pub fn menu () -> Callback {
+		Callback::Menu(CB_VERSION)
 	}
 
 	fn version (&self) -> u8 {
 		match self {
+			Callback::Edit(version, .. ) => *version,
 			Callback::List(version, .. ) => *version,
+			Callback::Menu(version) => *version,
 		}
 	}
 }
@@ -59,31 +76,35 @@ impl fmt::Display for Callback {
 }
 
 /// Produce new Keyboard Markup from current Callback
-pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<HashMap<i32, String>>>) -> Result<InlineKeyboardMarkup> {
+pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<FeedList>>) -> Result<InlineKeyboardMarkup> {
 	if cb.version() != CB_VERSION {
 		bail!("Wrong callback version.");
 	}
 	let mark = match cb {
+		Callback::Edit(_, _name) => { // XXX edit missing
+			let kb: Vec<Vec<InlineKeyboardButton>> = vec![];
+			InlineKeyboardMarkup::from(kb)
+		},
 		Callback::List(_, name, page) => {
 			let mut kb = vec![];
 			let feeds = feeds.lock_arc().await;
 			let long = feeds.len() > 6;
 			let (start, end) = if long {
-				(page * 5, 5 + page * 5)
+				(page * 5 + 1, 5 + page * 5)
 			} else {
 				(0, 6)
 			};
 			let mut i = 0;
 			if name.is_empty() {
 				for (id, name) in feeds.iter() {
-					if i < start { continue }
-					if i > end { break }
 					i += 1;
+					if i < start { continue }
 					kb.push(vec![
 						InlineKeyboardButton::for_callback_data(
 							format!("{}. {}", id, name),
-							Callback::list("xxx", *page).to_string()), // XXX edit
+							Callback::edit(name).to_string()),
 					]);
+					if i > end { break }
 				}
 			} else {
 				let mut found = false;
@@ -127,6 +148,21 @@ pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<HashMap<i32, String>>>) -> 
 			}
 			InlineKeyboardMarkup::from(kb)
 		},
+		Callback::Menu(_) => {
+			let kb = vec![
+				vec![
+					InlineKeyboardButton::for_callback_data(
+						"Add new channel",
+						Callback::menu().to_string()), // new XXX
+				],
+				vec![
+					InlineKeyboardButton::for_callback_data(
+						"List channels",
+						Callback::list("", 0).to_string()),
+				],
+			];
+			InlineKeyboardMarkup::from(kb)
+		},
 	};
 	Ok(mark)
 }
@@ -135,8 +171,6 @@ pub enum MyMessage <'a> {
 	Html { text: Cow<'a, str> },
 	HtmlTo { text: Cow<'a, str>, to: ChatPeerId },
 	HtmlToKb { text: Cow<'a, str>, to: ChatPeerId, kb: InlineKeyboardMarkup },
-	Text { text: Cow<'a, str> },
-	TextTo { text: Cow<'a, str>, to: ChatPeerId },
 }
 
 impl MyMessage <'_> {
@@ -158,18 +192,6 @@ impl MyMessage <'_> {
 		MyMessage::HtmlToKb { text, to, kb }
 	}
 	
-	pub fn text <'a, S> (text: S) -> MyMessage<'a>
-	where S: Into<Cow<'a, str>> {
-		let text = text.into();
-		MyMessage::Text { text }
-	}
-	
-	pub fn text_to <'a, S> (text: S, to: ChatPeerId) -> MyMessage<'a>
-	where S: Into<Cow<'a, str>> {
-		let text = text.into();
-		MyMessage::TextTo { text, to }
-	}
-	
 	fn req (&self, tg: &Tg) -> Result<SendMessage> {
 		Ok(match self {
 			MyMessage::Html { text } =>
@@ -182,12 +204,6 @@ impl MyMessage <'_> {
 				SendMessage::new(*to, text.as_ref())
 					.with_parse_mode(ParseMode::Html)
 					.with_reply_markup(kb.clone()),
-			MyMessage::Text { text } =>
-				SendMessage::new(tg.owner, text.as_ref())
-					.with_parse_mode(ParseMode::MarkdownV2),
-			MyMessage::TextTo { text, to } =>
-				SendMessage::new(*to, text.as_ref())
-					.with_parse_mode(ParseMode::MarkdownV2),
 		})
 	}
 }
@@ -230,6 +246,13 @@ impl Tg {
 	/// The sent `Message` on success.
 	pub async fn send (&self, msg: MyMessage<'_>) -> Result<Message> {
 		self.client.execute(msg.req(self)?).await.stack()
+	}
+
+	pub async fn answer_cb (&self, id: String, text: String) -> Result<bool> {
+		self.client.execute(
+			AnswerCallbackQuery::new(id)
+				.with_text(text)
+		).await.stack()
 	}
 
 	/// Create a copy of this `Tg` with the owner replaced by the given chat ID.

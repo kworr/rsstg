@@ -37,16 +37,16 @@ pub struct List {
 
 impl fmt::Display for List {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
-		write!(f, "\\#feed\\_{} \\*️⃣ `{}` {}\n🔗 `{}`", self.source_id, self.channel,
+		write!(f, "#feed_{} *️⃣ <code>{}</code> {}\n🔗 <code>{}</code>", self.source_id, self.channel,
 			match self.enabled {
 				true  => "🔄 enabled",
 				false => "⛔ disabled",
 			}, self.url)?;
 		if let Some(iv_hash) = &self.iv_hash {
-			write!(f, "\nIV: `{iv_hash}`")?;
+			write!(f, "\nIV: <code>{iv_hash}</code>")?;
 		}
 		if let Some(url_re) = &self.url_re {
-			write!(f, "\nRE: `{url_re}`")?;
+			write!(f, "\nRE: <code>{url_re}</code>")?;
 		}
 		Ok(())
 	}

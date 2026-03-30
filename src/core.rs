@@ -4,6 +4,7 @@ use crate::{
 	Mutex,
 	sql::Db,
 	tg_bot::{
+		Callback,
 		MyMessage,
 		Tg,
 	},
@@ -37,6 +38,7 @@ use stacked_errors::{
 use tgbot::{
 	handler::UpdateHandler,
 	types::{
+		CallbackQuery,
 		ChatPeerId,
 		Command,
 		Update,
@@ -48,14 +50,6 @@ use ttl_cache::TtlCache;
 
 lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
-}
-
-/// Escape characters that are special in Telegram MarkdownV2 by prefixing them with a backslash.
-///
-/// This ensures the returned string can be used as MarkdownV2-formatted Telegram message content
-/// without special characters being interpreted as MarkdownV2 markup.
-pub fn encode (text: &str) -> Cow<'_, str> {
-	RE_SPECIAL.replace_all(text, "\\$1")
 }
 
 // This one does nothing except making sure only one token exists for each id
@@ -109,7 +103,7 @@ impl Drop for Token {
 	}
 }
 
-type FeedList = HashMap<i32, String>;
+pub type FeedList = HashMap<i32, String>;
 type UserCache = TtlCache<i64, Arc<Mutex<FeedList>>>;
 
 #[derive(Clone)]
@@ -336,7 +330,7 @@ impl Core {
 						};
 						smol::spawn(Compat::new(async move {
 							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await
-								&& let Err(err) = clone.tg.send(MyMessage::text(format!("🛑 {source}\n{}", encode(&err.to_string())))).await
+								&& let Err(err) = clone.tg.send(MyMessage::html(format!("🛑 {source}\n<pre>{}</pre>", &err.to_string()))).await
 							{
 								eprintln!("Check error: {err}");
 							};
@@ -362,7 +356,7 @@ impl Core {
 	}
 
 	/// Returns current cached list of feed for requested user, or loads data from database
-	pub async fn get_feeds (&self, owner: i64) -> Result<Arc<Mutex<HashMap<i32, String>>>> {
+	pub async fn get_feeds (&self, owner: i64) -> Result<Arc<Mutex<FeedList>>> {
 		let mut feeds = self.feeds.lock_arc().await;
 		Ok(match feeds.get(&owner) {
 			None => {
@@ -417,6 +411,12 @@ impl Core {
 		}
 		Ok(())
 	}
+
+	pub async fn cb (&self, query: &CallbackQuery, cb: &str) -> Result<()> {
+		let cb: Callback = toml::from_str(cb).stack()?;
+		todo!();
+		Ok(())
+	}
 }
 
 impl UpdateHandler for Core {
@@ -426,29 +426,45 @@ impl UpdateHandler for Core {
 	/// it executes the corresponding command handler. If the handler returns an error, the error text
 	/// is sent back to the message's chat using MarkdownV2 formatting. Unknown commands produce an error
 	/// which is also reported to the chat.
-	async fn handle (&self, update: Update) {
-		if let UpdateType::Message(msg) = update.update_type 
-			&& let Ok(cmd) = Command::try_from(*msg)
-		{
-			let msg = cmd.get_message();
-			let words = cmd.get_args();
-			let command = cmd.get_name();
-			let res = match command {
-				"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
-				"/start" => command::start(self, msg).await,
-				"/list" => command::list(self, msg).await,
-				"/test" => command::test(self, msg).await,
-				"/add" | "/update" => command::update(self, command, msg, words).await,
-				any => Err(anyhow!("Unknown command: {any}")),
-			};
-			if let Err(err) = res 
-				&& let Err(err2) = self.tg.send(MyMessage::text_to(
-					format!("\\#error\n```\n{err}\n```"),
-					msg.chat.get_id(),
-				)).await
-			{
-				dbg!(err2);
-			}
-		} // TODO: debug log for skipped updates?;
+	async fn handle (&self, update: Update) -> () {
+		match update.update_type {
+			UpdateType::Message(msg) => {
+				if let Ok(cmd) = Command::try_from(*msg) {
+					let msg = cmd.get_message();
+					let words = cmd.get_args();
+					let command = cmd.get_name();
+					let res = match command {
+						"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
+						"/start" => command::start(self, msg).await,
+						"/list" => command::list(self, msg).await,
+						"/test" => command::test(self, msg).await,
+						"/add" | "/update" => command::update(self, command, msg, words).await,
+						any => Err(anyhow!("Unknown command: {any}")),
+					};
+					if let Err(err) = res 
+						&& let Err(err2) = self.tg.send(MyMessage::html_to(
+							format!("#error<pre>{err}</pre>"),
+							msg.chat.get_id(),
+						)).await
+					{
+						dbg!(err2);
+					}
+				} else {
+					// not a command
+				}
+			},
+			UpdateType::CallbackQuery(query) => {
+				if let Some(ref cb) = query.data
+					&& let Err(err) = self.cb(&query, cb).await
+				{
+					if let Err(err) = self.tg.answer_cb(query.id, err.to_string()).await {
+						println!("{err:?}");
+					}
+				}
+			},
+			_ => {
+				println!("Unhandled UpdateKind:\n{update:?}")
+			},
+		}
 	}
 }
