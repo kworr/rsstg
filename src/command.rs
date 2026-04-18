@@ -17,10 +17,12 @@ use stacked_errors::{
 };
 use tgbot::types::{
 	CallbackQuery,
+	Chat,
 	ChatMember,
 	ChatUsername,
 	GetChat,
 	GetChatAdministrators,
+	MaybeInaccessibleMessage,
 	Message,
 };
 use url::Url;
@@ -55,7 +57,7 @@ pub async fn test (core: &Core, msg: &Message) -> Result<()> {
 	let sender: i64 = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?.into();
 	let feeds = core.get_feeds(sender).await.stack()?;
-	let kb = get_kb(&Callback::menu(), feeds).await.stack()?;
+	let kb = get_kb(&Callback::menu(), &feeds).await.stack()?;
 	core.tg.send(MyMessage::html_to_kb("Main menu:", msg.chat.get_id(), kb)).await.stack()?;
 	Ok(())
 }
@@ -203,6 +205,39 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 		} else {
 			bail!("Failed to read data on freshly inserted source.");
 		}
+	};
+	Ok(())
+}
+
+pub async fn answer_cb (core: &Core, query: &CallbackQuery, cb: &str) -> Result<()> {
+	let cb: Callback = toml::from_str(cb).stack()?;
+	let sender = &query.from;
+	//let mut conn = core.db.begin().await.stack()?;
+	let text = "Sample".to_owned();
+	if let Some(msg) = &query.message {
+		match msg {
+			MaybeInaccessibleMessage::Message(message) => {
+				if let Some(owner) = message.sender.get_user()
+					&& sender == owner
+				{
+					let feeds = core.get_feeds(owner.id.into()).await.stack()?;
+					core.tg.update_message(message.chat.get_id().into(), message.id, text, &feeds, cb).await?;
+				} else {
+					core.tg.send(MyMessage::html(format!("Can't identify request sender:<br><pre>{:?}</pre>", message))).await.stack()?;
+				}
+			},
+			MaybeInaccessibleMessage::InaccessibleMessage(message) => {
+				let sender: i64 = sender.id.into();
+				if let Chat::Private(priv_chat) = &message.chat
+					&& priv_chat.id == sender
+				{
+					let feeds = core.get_feeds(priv_chat.id.into()).await.stack()?;
+					core.tg.update_message(message.chat.get_id().into(), message.message_id, text, &feeds, cb).await?;
+				} else {
+					core.tg.send(MyMessage::html(format!("Can't identify request sender:<br><pre>{:?}</pre>", message))).await.stack()?;
+				}
+			},
+		};
 	};
 	Ok(())
 }

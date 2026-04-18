@@ -7,23 +7,30 @@ use crate::{
 use std::{
 	borrow::Cow,
 	fmt,
+	time::Duration,
 };
 
 use serde::{
 	Deserialize,
 	Serialize,
 };
+use smol::Timer;
 use stacked_errors::{
 	bail,
 	Result,
 	StackableErr,
 };
 use tgbot::{
-	api::Client,
+	api::{
+		Client,
+		ExecuteError
+	},
 	types::{
 		AnswerCallbackQuery,
 		Bot,
 		ChatPeerId,
+		EditMessageResult,
+		EditMessageText,
 		GetBot,
 		InlineKeyboardButton,
 		InlineKeyboardMarkup,
@@ -40,7 +47,7 @@ pub enum Callback {
 	// Edit one feed (version, name)
 	Edit(u8, String),
 	// List all feeds (version, name to show, page number)
-	List(u8, String, u8),
+	List(u8, String, usize),
 	// Show root menu (version)
 	Menu(u8),
 }
@@ -51,7 +58,7 @@ impl Callback {
 		Callback::Edit(CB_VERSION, text.into())
 	}
 
-	pub fn list <S>(text: S, page: u8) -> Callback
+	pub fn list <S>(text: S, page: usize) -> Callback
 	where S: Into<String> {
 		Callback::List(CB_VERSION, text.into(), page)
 	}
@@ -76,7 +83,7 @@ impl fmt::Display for Callback {
 }
 
 /// Produce new Keyboard Markup from current Callback
-pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<FeedList>>) -> Result<InlineKeyboardMarkup> {
+pub async fn get_kb (cb: &Callback, feeds: &Arc<Mutex<FeedList>>) -> Result<InlineKeyboardMarkup> {
 	if cb.version() != CB_VERSION {
 		bail!("Wrong callback version.");
 	}
@@ -90,21 +97,21 @@ pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<FeedList>>) -> Result<Inlin
 			let feeds = feeds.lock_arc().await;
 			let long = feeds.len() > 6;
 			let (start, end) = if long {
-				(page * 5 + 1, 5 + page * 5)
+				(page * 5, 5 + page * 5)
 			} else {
 				(0, 6)
 			};
 			let mut i = 0;
 			if name.is_empty() {
-				for (id, name) in feeds.iter() {
-					i += 1;
-					if i < start { continue }
+				let feed_iter = feeds.iter().skip(start);
+				for (id, name) in feed_iter {
 					kb.push(vec![
 						InlineKeyboardButton::for_callback_data(
 							format!("{}. {}", id, name),
 							Callback::edit(name).to_string()),
 					]);
-					if i > end { break }
+					i += 1;
+					if i == end { break }
 				}
 			} else {
 				let mut found = false;
@@ -119,7 +126,7 @@ pub async fn get_kb (cb: &Callback, feeds: Arc<Mutex<FeedList>>) -> Result<Inlin
 							format!("{}. {}", id, feed_name),
 							Callback::list("xxx", *page).to_string()), // XXX edit
 					]);
-					if i > end {
+					if i == end {
 						// page complete, if found we got the right page, if not - reset and
 						// continue.
 						if found {
@@ -229,6 +236,9 @@ impl Tg {
 		let api_key = settings.get_string("api_key").stack()?;
 
 		let owner = ChatPeerId::from(settings.get_int("owner").stack()?);
+		// We don't use retries, as in async environment this will just get us stuck for extra
+		// amount of time on simple requests. Just bail, show error and ack it in the code. In
+		// other case we might got stuck with multiple open transactions in database.
 		let client = Client::new(&api_key).stack()?
 			.with_host(settings.get_string("api_gateway").stack()?)
 			.with_max_retries(0);
@@ -267,6 +277,29 @@ impl Tg {
 		Tg {
 			owner: ChatPeerId::from(owner.into()),
 			..self.clone()
+		}
+	}
+
+	pub async fn update_message (&self, chat_id: i64, message_id: i64, text: String, feeds: &Arc<Mutex<FeedList>>, cb: Callback) -> Result<EditMessageResult> {
+		loop {
+			let req = EditMessageText::for_chat_message(chat_id, message_id, &text)
+				.with_reply_markup(get_kb(&cb, feeds).await.stack()?);
+			let res = self.client.execute(req).await;
+			match res {
+				Ok(res) => return Ok(res),
+				Err(ref err) => {
+					if let ExecuteError::Response(resp) = err
+						&& let Some(delay) = resp.retry_after()
+					{
+						if delay > 60 {
+							return res.context("Delay too big (>60), not waiting.");
+						}
+						Timer::after(Duration::from_secs(delay)).await;
+					} else {
+						return res.context("Can't update message");
+					}
+				},
+			};
 		}
 	}
 }

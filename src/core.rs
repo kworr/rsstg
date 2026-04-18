@@ -14,7 +14,6 @@ use std::{
 	borrow::Cow,
 	collections::{
 		BTreeMap,
-		HashMap,
 		HashSet,
 	},
 	time::Duration,
@@ -103,7 +102,7 @@ impl Drop for Token {
 	}
 }
 
-pub type FeedList = HashMap<i32, String>;
+pub type FeedList = BTreeMap<i32, String>;
 type UserCache = TtlCache<i64, Arc<Mutex<FeedList>>>;
 
 #[derive(Clone)]
@@ -362,7 +361,7 @@ impl Core {
 			None => {
 				let mut conn = self.db.begin().await.stack()?;
 				let feed_list = conn.get_feeds(owner).await.stack()?;
-				let mut map = HashMap::new();
+				let mut map = BTreeMap::new();
 				for feed in feed_list {
 					map.insert(feed.source_id, feed.channel);
 				};
@@ -456,10 +455,9 @@ impl UpdateHandler for Core {
 			UpdateType::CallbackQuery(query) => {
 				if let Some(ref cb) = query.data
 					&& let Err(err) = self.cb(&query, cb).await
+					&& let Err(err) = self.tg.answer_cb(query.id, err.to_string()).await
 				{
-					if let Err(err) = self.tg.answer_cb(query.id, err.to_string()).await {
-						println!("{err:?}");
-					}
+					println!("{err:?}");
 				}
 			},
 			_ => {
