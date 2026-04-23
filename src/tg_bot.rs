@@ -10,10 +10,12 @@ use std::{
 	time::Duration,
 };
 
+use lazy_static::lazy_static;
 use serde::{
 	Deserialize,
 	Serialize,
 };
+use regex::Regex;
 use smol::Timer;
 use stacked_errors::{
 	bail,
@@ -41,6 +43,21 @@ use tgbot::{
 };
 
 const CB_VERSION: u8 = 0;
+
+lazy_static! {
+	pub static ref RE_CLOSING: Regex = Regex::new(r"</[ \t]*(pre|code)[ \t]*>").unwrap();
+}
+
+// validate input as being postable in preformatted block, all html tags are fine, except tags that
+// break the block - </pre> and </code>, we don't need to escape anything else, as telegram manages
+// that
+pub fn validate (text: &str) -> Result<&str> {
+	if RE_CLOSING.is_match(text) {
+		bail!("Telegram closing tag found.");
+	} else {
+		Ok(text)
+	}
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Callback {
@@ -150,7 +167,7 @@ pub async fn get_kb (cb: &Callback, feeds: &Arc<Mutex<FeedList>>) -> Result<Inli
 					InlineKeyboardButton::for_callback_data("<<",
 						Callback::list("", if *page == 0 { *page } else { page - 1 } ).to_string()),
 					InlineKeyboardButton::for_callback_data(">>",
-						Callback::list("", page + 1).to_string()),
+						Callback::list("", page.saturating_add(1)).to_string()),
 				]);
 			}
 			InlineKeyboardMarkup::from(kb)
@@ -199,8 +216,8 @@ impl MyMessage <'_> {
 		MyMessage::HtmlToKb { text, to, kb }
 	}
 	
-	fn req (&self, tg: &Tg) -> Result<SendMessage> {
-		Ok(match self {
+	fn req (&self, tg: &Tg) -> SendMessage {
+		match self {
 			MyMessage::Html { text } =>
 				SendMessage::new(tg.owner, text.as_ref())
 					.with_parse_mode(ParseMode::Html),
@@ -211,7 +228,7 @@ impl MyMessage <'_> {
 				SendMessage::new(*to, text.as_ref())
 					.with_parse_mode(ParseMode::Html)
 					.with_reply_markup(kb.clone()),
-		})
+		}
 	}
 }
 
@@ -255,7 +272,7 @@ impl Tg {
 	/// # Returns
 	/// The sent `Message` on success.
 	pub async fn send (&self, msg: MyMessage<'_>) -> Result<Message> {
-		self.client.execute(msg.req(self)?).await.stack()
+		self.client.execute(msg.req(self)).await.stack()
 	}
 
 	pub async fn answer_cb (&self, id: String, text: String) -> Result<bool> {
@@ -280,6 +297,7 @@ impl Tg {
 		}
 	}
 
+	// XXX Can loop indefinitely if API calls results retry_after, add max retries?
 	pub async fn update_message (&self, chat_id: i64, message_id: i64, text: String, feeds: &Arc<Mutex<FeedList>>, cb: Callback) -> Result<EditMessageResult> {
 		loop {
 			let req = EditMessageText::for_chat_message(chat_id, message_id, &text)

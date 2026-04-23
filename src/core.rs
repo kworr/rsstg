@@ -7,6 +7,7 @@ use crate::{
 		Callback,
 		MyMessage,
 		Tg,
+		validate,
 	},
 };
 
@@ -114,6 +115,8 @@ pub struct Core {
 	http_client: reqwest::Client,
 }
 
+// XXX Right now that part is unfinished and I guess I need to finish menu first
+#[allow(unused)]
 pub struct Post {
 	uri: String,
 	_title: String,
@@ -423,8 +426,7 @@ impl UpdateHandler for Core {
 	///
 	/// This method inspects the update; if it contains a message that can be parsed as a bot command,
 	/// it executes the corresponding command handler. If the handler returns an error, the error text
-	/// is sent back to the message's chat using MarkdownV2 formatting. Unknown commands produce an error
-	/// which is also reported to the chat.
+	/// is sent back to the message's chat. Unknown commands produce an error which is also reported to the chat.
 	async fn handle (&self, update: Update) -> () {
 		match update.update_type {
 			UpdateType::Message(msg) => {
@@ -440,13 +442,20 @@ impl UpdateHandler for Core {
 						"/add" | "/update" => command::update(self, command, msg, words).await,
 						any => Err(anyhow!("Unknown command: {any}")),
 					};
-					if let Err(err) = res 
-						&& let Err(err2) = self.tg.send(MyMessage::html_to(
-							format!("#error<pre>{err}</pre>"),
-							msg.chat.get_id(),
-						)).await
-					{
-						dbg!(err2);
+					if let Err(err) = res  {
+						match validate(&err.to_string()) {
+							Ok(text) => {
+								if let Err(err2) = self.tg.send(MyMessage::html_to(
+									format!("#error<pre>{}</pre>", text),
+									msg.chat.get_id(),
+								)).await {
+									dbg!(err2);
+								}
+							},
+							Err(err2) => {
+								dbg!(err2);
+							},
+						}
 					}
 				} else {
 					// not a command

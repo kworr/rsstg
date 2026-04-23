@@ -44,7 +44,7 @@ pub async fn start (core: &Core, msg: &Message) -> Result<()> {
 /// Send the sender's subscription list to the chat.
 ///
 /// Retrieves the message sender's user ID, obtains their subscription list from `core`,
-/// and sends the resulting reply into the message chat using MarkdownV2.
+/// and sends the resulting reply into the message chat using HTML
 pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
