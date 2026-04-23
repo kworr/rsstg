@@ -204,6 +204,9 @@ impl Conn {
 		Ok(())
 	}
 
+	#[allow(clippy::too_many_arguments)] // XXX do I need to make it variadic? I guess it work fine
+										 // this way for now, unless there would be a good struct
+										 // with all source fields to use that as an argument
 	pub async fn update <I> (&mut self, update: Option<i32>, channel: &str, channel_id: i64, url: &str, iv_hash: Option<&str>, url_re: Option<&str>, owner: I) -> Result<&str>
 	where I: Into<i64> {
 		match match update {

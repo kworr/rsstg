@@ -125,6 +125,8 @@ pub struct Core {
 	http_client: reqwest::Client,
 }
 
+// XXX Right now that part is unfinished and I guess I need to finish menu first
+#[allow(unused)]
 pub struct Post {
 	uri: String,
 	title: String,
