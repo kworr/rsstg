@@ -1,10 +1,13 @@
+use crate::{
+	Arc,
+	Mutex,
+};
+
 use std::{
 	borrow::Cow,
 	fmt,
-	sync::Arc,
 };
 
-use smol::lock::Mutex;
 use chrono::{
 	DateTime,
 	FixedOffset,
@@ -34,19 +37,26 @@ pub struct List {
 
 impl fmt::Display for List {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
-		write!(f, "\\#feed\\_{} \\*️⃣ `{}` {}\n🔗 `{}`", self.source_id, self.channel,
+		write!(f, "#feed_{} *️⃣ <code>{}</code> {}\n🔗 <code>{}</code>", self.source_id, self.channel,
 			match self.enabled {
 				true  => "🔄 enabled",
 				false => "⛔ disabled",
 			}, self.url)?;
 		if let Some(iv_hash) = &self.iv_hash {
-			write!(f, "\nIV: `{iv_hash}`")?;
+			write!(f, "\nIV: <code>{iv_hash}</code>")?;
 		}
 		if let Some(url_re) = &self.url_re {
-			write!(f, "\nRE: `{url_re}`")?;
+			write!(f, "\nRE: <code>{url_re}</code>")?;
 		}
 		Ok(())
 	}
+}
+
+/// One feed, used for caching and menu navigation
+#[derive(sqlx::FromRow, Debug)]
+pub struct Feed {
+	pub source_id: i32,
+	pub channel: String,
 }
 
 #[derive(sqlx::FromRow, Debug)]
@@ -150,17 +160,30 @@ impl Conn {
 		}
 	}
 
+	/// Checks whether a post with the given URL exists for the specified source.
+	///
+	/// # Parameters
+	/// - `post_url`: The URL of the post to check.
+	/// - `id`: The source identifier (converted to `i64`).
+	///
+	/// # Returns
+	/// `true` if a post with the URL exists for the source, `false` otherwise.
 	pub async fn exists <I> (&mut self, post_url: &str, id: I) -> Result<bool>
 	where I: Into<i64> {
 		let row = sqlx::query("select exists(select true from rsstg_post where url = $1 and source_id = $2) as exists;")
 			.bind(post_url)
 			.bind(id.into())
 			.fetch_one(&mut *self.0).await.stack()?;
-		if let Some(exists) = row.try_get("exists").stack()? {
-			Ok(exists)
-		} else {
-			bail!("Database error: can't check whether source exists.");
-		}
+		row.try_get("exists")
+			.stack_err("Database error: can't check whether post exists.")
+	}
+
+	pub async fn get_feeds <I>(&mut self, owner: I) -> Result<Vec<Feed>>
+	where I: Into<i64> {
+		let block: Vec<Feed> = sqlx::query_as("select source_id, channel from rsstg_source where owner = $1 order by source_id")
+			.bind(owner.into())
+			.fetch_all(&mut *self.0).await.stack()?;
+		Ok(block)
 	}
 
 	/// Get all pending events for (now + 1 minute)
@@ -170,7 +193,7 @@ impl Conn {
 		Ok(block)
 	}
 
-	pub async fn get_list <I> (&mut self, owner: I) -> Result<Vec<List>>
+	pub async fn get_list <I>(&mut self, owner: I) -> Result<Vec<List>>
 	where I: Into<i64> {
 		let source: Vec<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 order by source_id")
 			.bind(owner.into())
@@ -183,6 +206,15 @@ impl Conn {
 		let source: Option<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 and source_id = $2")
 			.bind(owner.into())
 			.bind(id)
+			.fetch_optional(&mut *self.0).await.stack()?;
+		Ok(source)
+	}
+
+	pub async fn get_one_name <I> (&mut self, owner: I, name: &str) -> Result<Option<List>>
+	where I: Into<i64> {
+		let source: Option<List> = sqlx::query_as("select source_id, channel, enabled, url, iv_hash, url_re from rsstg_source where owner = $1 and channel = $2")
+			.bind(owner.into())
+			.bind(name)
 			.fetch_optional(&mut *self.0).await.stack()?;
 		Ok(source)
 	}
@@ -225,7 +257,7 @@ impl Conn {
 				.bind(channel)
 				.bind(url_re)
 				.execute(&mut *self.0).await
-			{
+		{
 			Ok(_) => Ok(match update {
 				Some(_) => "Channel updated.",
 				None => "Channel added.",

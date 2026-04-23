@@ -1,6 +1,14 @@
 use crate::{
+	Arc,
 	command,
+	Mutex,
 	sql::Db,
+	tg_bot::{
+		Callback,
+		MyMessage,
+		Tg,
+		validate,
+	},
 };
 
 use std::{
@@ -9,7 +17,7 @@ use std::{
 		BTreeMap,
 		HashSet,
 	},
-	sync::Arc,
+	time::Duration,
 };
 
 use async_compat::Compat;
@@ -19,48 +27,29 @@ use chrono::{
 };
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::header::{
-	CACHE_CONTROL,
-	EXPIRES,
-	LAST_MODIFIED
-};
-use smol::{
-	Timer,
-	lock::Mutex,
-};
-use tgbot::{
-	api::Client,
-	handler::UpdateHandler,
-	types::{
-		Bot,
-		ChatPeerId,
-		Command,
-		GetBot,
-		Message,
-		ParseMode,
-		SendMessage,
-		Update,
-		UpdateType,
-		UserPeerId,
-	},
-};
+use reqwest::header::LAST_MODIFIED;
+use smol::Timer;
 use stacked_errors::{
 	Result,
 	StackableErr,
 	anyhow,
 	bail,
 };
+use tgbot::{
+	handler::UpdateHandler,
+	types::{
+		CallbackQuery,
+		ChatPeerId,
+		Command,
+		Update,
+		UpdateType,
+		UserPeerId,
+	},
+};
+use ttl_cache::TtlCache;
 
 lazy_static!{
 	pub static ref RE_SPECIAL: Regex = Regex::new(r"([\-_*\[\]()~`>#+|{}\.!])").unwrap();
-}
-
-/// Escape characters that are special in Telegram MarkdownV2 by prefixing them with a backslash.
-///
-/// This ensures the returned string can be used as MarkdownV2-formatted Telegram message content
-/// without special characters being interpreted as MarkdownV2 markup.
-pub fn encode (text: &str) -> Cow<'_, str> {
-	RE_SPECIAL.replace_all(text, "\\$1")
 }
 
 // This one does nothing except making sure only one token exists for each id
@@ -114,13 +103,14 @@ impl Drop for Token {
 	}
 }
 
+pub type FeedList = BTreeMap<i32, String>;
+type UserCache = TtlCache<i64, Arc<Mutex<FeedList>>>;
+
 #[derive(Clone)]
 pub struct Core {
-	owner_chat: ChatPeerId,
-	// max_delay: u16,
-	pub tg: Client,
-	pub me: Bot,
+	pub tg: Tg,
 	pub db: Db,
+	pub feeds: Arc<Mutex<UserCache>>,
 	running: Arc<Mutex<HashSet<i32>>>,
 	http_client: reqwest::Client,
 }
@@ -129,16 +119,16 @@ pub struct Core {
 #[allow(unused)]
 pub struct Post {
 	uri: String,
-	title: String,
-	authors: String,
-	summary: String,
+	_title: String,
+	_authors: String,
+	_summary: String,
 }
 
 impl Core {
 	/// Create a Core instance from configuration and start its background autofetch loop.
 	///
 	/// The provided `settings` must include:
-	/// - `owner` (integer): chat id to use as the default destination,
+	/// - `owner` (integer): default chat id to use as the owner/destination,
 	/// - `api_key` (string): Telegram bot API key,
 	/// - `api_gateway` (string): Telegram API gateway host,
 	/// - `pg` (string): PostgreSQL connection string,
@@ -148,33 +138,26 @@ impl Core {
 	/// an empty running set for per-id tokens, and a spawned background task that periodically runs
 	/// `autofetch`. If any required setting is missing or initialization fails, an error is returned.
 	pub async fn new(settings: config::Config) -> Result<Core> {
-		let owner_chat = ChatPeerId::from(settings.get_int("owner").stack()?);
-		let api_key = settings.get_string("api_key").stack()?;
-		let tg = Client::new(&api_key).stack()?
-			.with_host(settings.get_string("api_gateway").stack()?);
-
 		let mut client = reqwest::Client::builder();
 		if let Ok(proxy) = settings.get_string("proxy") {
 			let proxy = reqwest::Proxy::all(proxy).stack()?;
 			client = client.proxy(proxy);
 		}
-		let http_client = client.build().stack()?;
-		let me = tg.execute(GetBot).await.stack()?;
+
 		let core = Core {
-			tg,
-			me,
-			owner_chat,
+			tg: Tg::new(&settings).await.stack()?,
 			db: Db::new(&settings.get_string("pg").stack()?)?,
+			feeds: Arc::new(Mutex::new(TtlCache::new(10000))),
 			running: Arc::new(Mutex::new(HashSet::new())),
-			http_client,
-			// max_delay: 60,
+			http_client: client.build().stack()?,
 		};
+
 		let clone = core.clone();
 		smol::spawn(Compat::new(async move {
 			loop {
 				let delay = match &clone.autofetch().await {
 					Err(err) => {
-						if let Err(err) = clone.send(format!("🛑 {err}"), None, None).await {
+						if let Err(err) = clone.tg.send(MyMessage::html(format!("🛑 {err}"))).await {
 							eprintln!("Autofetch error: {err:?}");
 						};
 						std::time::Duration::from_secs(60)
@@ -185,18 +168,6 @@ impl Core {
 			}
 		})).detach();
 		Ok(core)
-	}
-
-	pub async fn send <S>(&self, msg: S, target: Option<ChatPeerId>, mode: Option<ParseMode>) -> Result<Message>
-	where S: Into<String> {
-		let msg = msg.into();
-
-		let mode = mode.unwrap_or(ParseMode::Html);
-		let target = target.unwrap_or(self.owner_chat);
-		self.tg.execute(
-			SendMessage::new(target, msg)
-				.with_parse_mode(mode)
-		).await.stack()
 	}
 
 	/// Fetches the feed for a source, sends any newly discovered posts to the appropriate chat, and records them in the database.
@@ -220,7 +191,7 @@ impl Core {
 		let mut conn = self.db.begin().await.stack()?;
 
 		let _token = Token::new(&self.running, id).await.stack()?;
-		let source = conn.get_source(id, self.owner_chat).await.stack()?;
+		let source = conn.get_source(id, self.tg.owner).await.stack()?;
 		conn.set_scrape(id).await.stack()?;
 		let destination = ChatPeerId::from(match real {
 			true => source.channel_id,
@@ -236,6 +207,10 @@ impl Core {
 		let response = builder.send().await.stack()?;
 		#[cfg(debug_assertions)]
 		{
+			use reqwest::header::{
+				CACHE_CONTROL,
+				EXPIRES,
+			};
 			let headers = response.headers();
 			let expires = headers.get(EXPIRES);
 			let cache = headers.get(CACHE_CONTROL);
@@ -263,15 +238,11 @@ impl Core {
 								None => bail!("Feed item misses posting date."),
 							}),
 						}.stack()?;
-						let uri = link.to_string();
-						let title = item.title().unwrap_or("").to_string();
-						let authors = item.author().unwrap_or("").to_string();
-						let summary = item.content().unwrap_or("").to_string();
 						posts.insert(date, Post{
-							uri,
-							title,
-							authors,
-							summary,
+							uri: link.to_string(),
+							_title: item.title().unwrap_or("").to_string(),
+							_authors: item.author().unwrap_or("").to_string(),
+							_summary: item.content().unwrap_or("").to_string(),
 						});
 					}
 				};
@@ -291,14 +262,13 @@ impl Core {
 										links[0].href().to_string()
 									}
 								};
-								let title = item.title().to_string();
-								let authors = item.authors().iter().map(|x| format!("{} <{:?}>", x.name(), x.email())).collect::<Vec<String>>().join(", ");
-								let summary = if let Some(sum) = item.summary() { sum.value.clone() } else { String::new() };
+								let _authors = item.authors().iter().map(|x| format!("{} <{:?}>", x.name(), x.email())).collect::<Vec<String>>().join(", ");
+								let _summary = if let Some(sum) = item.summary() { sum.value.clone() } else { String::new() };
 								posts.insert(*date, Post{
 									uri,
-									title,
-									authors,
-									summary,
+									_title: item.title().to_string(),
+									_authors,
+									_summary,
 								});
 							};
 						},
@@ -320,10 +290,10 @@ impl Core {
 				if this_fetch.is_none() || *date > this_fetch.unwrap() {
 					this_fetch = Some(*date);
 				};
-				self.send( match &source.iv_hash {
+				self.tg.send(MyMessage::html_to(match &source.iv_hash {
 					Some(hash) => format!("<a href=\"https://t.me/iv?url={post_url}&rhash={hash}\"> </a>{post_url}"),
 					None => format!("{post_url}"),
-				}, Some(destination), Some(ParseMode::Html)).await.stack()?;
+				}, destination)).await.stack()?;
 				conn.add_post(id, date, &post_url).await.stack()?;
 				posted += 1;
 			};
@@ -332,6 +302,11 @@ impl Core {
 		Ok(format!("Posted: {posted}"))
 	}
 
+	/// Determine the delay until the next scheduled fetch and spawn background checks for any overdue sources.
+	///
+	/// This scans the database queue, spawns background tasks to run checks for sources whose `next_fetch`
+	/// is in the past (each task uses a Core clone with the appropriate owner), and computes the shortest
+	/// duration until the next `next_fetch`.
 	async fn autofetch(&self) -> Result<std::time::Duration> {
 		let mut delay = chrono::Duration::minutes(1);
 		let now = chrono::Local::now();
@@ -344,7 +319,7 @@ impl Core {
 				if next_fetch < now {
 					if let (Some(owner), Some(source_id), last_scrape) = (row.owner, row.source_id, row.last_scrape) {
 						let clone = Core {
-							owner_chat: ChatPeerId::from(owner),
+							tg: self.tg.with_owner(owner),
 							..self.clone()
 						};
 						let source = {
@@ -356,11 +331,10 @@ impl Core {
 							}
 						};
 						smol::spawn(Compat::new(async move {
-							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await {
-								if let Err(err) = clone.send(&format!("🛑 {source}\n{}", encode(&err.to_string())), None, Some(ParseMode::MarkdownV2)).await {
-									eprintln!("Check error: {err}");
-									// clone.disable(&source_id, owner).await.unwrap();
-								};
+							if let Err(err) = clone.check(source_id, true, Some(last_scrape)).await
+								&& let Err(err) = clone.tg.send(MyMessage::html(format!("🛑 {source}\n<pre>{}</pre>", &err.to_string()))).await
+							{
+								eprintln!("Check error: {err}");
 							};
 						})).detach();
 					}
@@ -372,6 +346,7 @@ impl Core {
 		delay.to_std().stack()
 	}
 
+	/// Displays full list of managed channels for specified user
 	pub async fn list (&self, owner: UserPeerId) -> Result<String> {
 		let mut reply: Vec<String> = vec![];
 		reply.push("Channels:".into());
@@ -381,31 +356,122 @@ impl Core {
 		};
 		Ok(reply.join("\n\n"))
 	}
+
+	/// Returns current cached list of feed for requested user, or loads data from database
+	pub async fn get_feeds (&self, owner: i64) -> Result<Arc<Mutex<FeedList>>> {
+		let mut feeds = self.feeds.lock_arc().await;
+		Ok(match feeds.get(&owner) {
+			None => {
+				let mut conn = self.db.begin().await.stack()?;
+				let feed_list = conn.get_feeds(owner).await.stack()?;
+				let mut map = BTreeMap::new();
+				for feed in feed_list {
+					map.insert(feed.source_id, feed.channel);
+				};
+				let res = Arc::new(Mutex::new(map));
+				feeds.insert(owner, res.clone(), Duration::from_secs(60 * 60 * 3));
+				res
+			},
+			Some(res) => res.clone(),
+		})
+	}
+
+	/// Adds feed to cached list
+	pub async fn add_feed (&self, owner: i64, source_id: i32, channel: String) -> Result<()> {
+		let mut inserted = true;
+		{
+			let mut feeds = self.feeds.lock_arc().await;
+			if let Some(feed) = feeds.get_mut(&owner) {
+				let mut feed = feed.lock_arc().await;
+				feed.insert(source_id, channel);
+			} else {
+				inserted = false;
+			}
+		}
+		// in case insert failed - we miss the entry we needed to expand, reload everything from
+		// database
+		if !inserted {
+			self.get_feeds(owner).await.stack()?;
+		}
+		Ok(())
+	}
+
+	/// Removes feed from cached list
+	pub async fn rm_feed (&self, owner: i64, source_id: &i32) -> Result<()> {
+		let mut dropped = false;
+		{
+			let mut feeds = self.feeds.lock_arc().await;
+			if let Some(feed) = feeds.get_mut(&owner) {
+				let mut feed = feed.lock_arc().await;
+				feed.remove(source_id);
+				dropped = true;
+			}
+		}
+		// in case we failed to found feed we need to remove - just reload everything from database
+		if !dropped {
+			self.get_feeds(owner).await.stack()?;
+		}
+		Ok(())
+	}
+
+	pub async fn cb (&self, query: &CallbackQuery, cb: &str) -> Result<()> {
+		let cb: Callback = toml::from_str(cb).stack()?;
+		todo!();
+		Ok(())
+	}
 }
 
 impl UpdateHandler for Core {
-	async fn handle (&self, update: Update) {
-		if let UpdateType::Message(msg) = update.update_type {
-			if let Ok(cmd) = Command::try_from(*msg) {
-				let msg = cmd.get_message();
-				let words = cmd.get_args();
-				let command = cmd.get_name();
-				let res = match command {
-					"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
-					"/start" => command::start(self, msg).await,
-					"/list" => command::list(self, msg).await,
-					"/add" | "/update" => command::update(self, command, msg, words).await,
-					any => Err(anyhow!("Unknown command: {any}")),
-				};
-				if let Err(err) = res {
-					if let Err(err2) = self.send(format!("\\#error\n```\n{err}\n```"),
-						Some(msg.chat.get_id()),
-						Some(ParseMode::MarkdownV2)
-					).await{
-						dbg!(err2);
+	/// Dispatches an incoming Telegram update to a matching command handler and reports handler errors to the originating chat.
+	///
+	/// This method inspects the update; if it contains a message that can be parsed as a bot command,
+	/// it executes the corresponding command handler. If the handler returns an error, the error text
+	/// is sent back to the message's chat. Unknown commands produce an error which is also reported to the chat.
+	async fn handle (&self, update: Update) -> () {
+		match update.update_type {
+			UpdateType::Message(msg) => {
+				if let Ok(cmd) = Command::try_from(*msg) {
+					let msg = cmd.get_message();
+					let words = cmd.get_args();
+					let command = cmd.get_name();
+					let res = match command {
+						"/check" | "/clean" | "/enable" | "/delete" | "/disable" => command::command(self, command, msg, words).await,
+						"/start" => command::start(self, msg).await,
+						"/list" => command::list(self, msg).await,
+						"/test" => command::test(self, msg).await,
+						"/add" | "/update" => command::update(self, command, msg, words).await,
+						any => Err(anyhow!("Unknown command: {any}")),
 					};
+					if let Err(err) = res  {
+						match validate(&err.to_string()) {
+							Ok(text) => {
+								if let Err(err2) = self.tg.send(MyMessage::html_to(
+									format!("#error<pre>{}</pre>", text),
+									msg.chat.get_id(),
+								)).await {
+									dbg!(err2);
+								}
+							},
+							Err(err2) => {
+								dbg!(err2);
+							},
+						}
+					}
+				} else {
+					// not a command
 				}
-			};
-		};
+			},
+			UpdateType::CallbackQuery(query) => {
+				if let Some(ref cb) = query.data
+					&& let Err(err) = self.cb(&query, cb).await
+					&& let Err(err) = self.tg.answer_cb(query.id, err.to_string()).await
+				{
+					println!("{err:?}");
+				}
+			},
+			_ => {
+				println!("Unhandled UpdateKind:\n{update:?}")
+			},
+		}
 	}
 }

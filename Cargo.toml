@@ -1,8 +1,10 @@
 [package]
 name = "rsstg"
-version = "0.5.6"
-authors = ["arcade"]
-edition = "2021"
+version = "0.6.0"
+authors = [ "arcade@b1t.name" ]
+edition = "2024"
+license = "0BSD"
+repository = "http://fs.b1t.name/rsstg"
 
 [dependencies]
 async-compat = "0.2.5"
@@ -17,9 +19,12 @@ regex = "1.10.6"
 reqwest = { version = "0.13.1", features = [ "brotli", "socks", "deflate" ]}
 rss = "2.0.9"
 sedregex = "0.2.5"
+serde = "1.0.228"
 smol = "2.0.2"
 stacked_errors = "0.7.1"
 sqlx = { version = "0.8", features = [ "postgres", "runtime-tokio-rustls", "chrono", "macros" ], default-features = false }
+toml = "1.1.0"
+ttl_cache = "0.5.1"
 url = "2.5.8"
 
 [profile.release]

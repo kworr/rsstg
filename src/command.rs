@@ -1,4 +1,11 @@
-use crate::core::Core;
+use crate::{
+	core::Core,
+	tg_bot::{
+		Callback,
+		MyMessage,
+		get_kb,
+	},
+};
 
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -9,12 +16,14 @@ use stacked_errors::{
 	bail,
 };
 use tgbot::types::{
+	CallbackQuery,
+	Chat,
 	ChatMember,
 	ChatUsername,
 	GetChat,
 	GetChatAdministrators,
+	MaybeInaccessibleMessage,
 	Message,
-	ParseMode::MarkdownV2,
 };
 use url::Url;
 
@@ -23,20 +32,48 @@ lazy_static! {
 	static ref RE_IV_HASH: Regex = Regex::new(r"^[a-f0-9]{14}$").unwrap();
 }
 
+/// Sends an informational message to the message's chat linking to the bot help channel.
 pub async fn start (core: &Core, msg: &Message) -> Result<()> {
-	core.send("We are open\\. Probably\\. Visit [channel](https://t.me/rsstg_bot_help/3) for details\\.",
-		Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
+	core.tg.send(MyMessage::html_to(
+		"We are open. Probably. Visit <a href=\"https://t.me/rsstg_bot_help/3\">channel</a>) for details.",
+		msg.chat.get_id()
+	)).await.stack()?;
 	Ok(())
 }
 
+/// Send the sender's subscription list to the chat.
+///
+/// Retrieves the message sender's user ID, obtains their subscription list from `core`,
+/// and sends the resulting reply into the message chat using HTML
 pub async fn list (core: &Core, msg: &Message) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
 	let reply = core.list(sender).await.stack()?;
-	core.send(reply, Some(msg.chat.get_id()), Some(MarkdownV2)).await.stack()?;
+	core.tg.send(MyMessage::html_to(reply, msg.chat.get_id())).await.stack()?;
 	Ok(())
 }
 
+pub async fn test (core: &Core, msg: &Message) -> Result<()> {
+	let sender: i64 = msg.sender.get_user_id()
+		.stack_err("Ignoring unreal users.")?.into();
+	let feeds = core.get_feeds(sender).await.stack()?;
+	let kb = get_kb(&Callback::menu(), &feeds).await.stack()?;
+	core.tg.send(MyMessage::html_to_kb("Main menu:", msg.chat.get_id(), kb)).await.stack()?;
+	Ok(())
+}
+
+/// Handle channel-management commands that operate on a single numeric source ID.
+///
+/// This validates that exactly one numeric argument is provided, performs the requested
+/// operation (check, clean, enable, delete, disable) against the database or core,
+/// and sends the resulting reply to the chat.
+///
+/// # Parameters
+///
+/// - `core`: application core containing database and Telegram clients.
+/// - `command`: command string (e.g. "/check", "/clean", "/enable", "/delete", "/disable").
+/// - `msg`: incoming Telegram message that triggered the command; used to determine sender and chat.
+/// - `words`: command arguments; expected to contain exactly one element that parses as a 32-bit integer.
 pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let mut conn = core.db.begin().await.stack()?;
 	let sender = msg.sender.get_user_id()
@@ -49,18 +86,34 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 					.context("Channel check failed.")?.into(),
 				"/clean" => conn.clean(number, sender).await.stack()?,
 				"/enable" => conn.enable(number, sender).await.stack()?.into(),
-				"/delete" => conn.delete(number, sender).await.stack()?,
+				"/delete" => {
+					let res = conn.delete(number, sender).await.stack()?;
+					core.rm_feed(sender.into(), &number).await.stack()?;
+					res
+				}
 				"/disable" => conn.disable(number, sender).await.stack()?.into(),
 				_ => bail!("Command {command} {words:?} not handled."),
 			},
 		}
 	} else {
-		"This command needs exacly one number.".into()
+		"This command needs exactly one number.".into()
 	};
-	core.send(reply, Some(msg.chat.get_id()), None).await.stack()?;
+	core.tg.send(MyMessage::html_to(reply, msg.chat.get_id())).await.stack()?;
 	Ok(())
 }
 
+/// Validate command arguments, check permissions and update or add a channel feed configuration in the database.
+///
+/// This function parses and validates parameters supplied by a user command (either "/update <id> ..." or "/add ..."),
+/// verifies the channel username and feed URL, optionally validates an IV hash and a replacement regexp,
+/// ensures both the bot and the command sender are administrators of the target channel, and performs the database update.
+///
+/// # Parameters
+///
+/// - `command` — the invoked command, expected to be either `"/update"` (followed by a numeric source id) or `"/add"`.
+/// - `msg` — the incoming Telegram message; used to derive the command sender and target chat id for the reply.
+/// - `words` — the command arguments: for `"/add"` expected `channel url [iv_hash|'-'] [url_re|'-']`; for `"/update"`
+///   the first element must be a numeric `source_id` followed by the same parameters.
 pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]) -> Result<()> {
 	let sender = msg.sender.get_user_id()
 		.stack_err("Ignoring unreal users.")?;
@@ -81,17 +134,6 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 		i_words.next().context(at_least)?,
 		i_words.next(),
 		i_words.next());
-	/*
-	let channel = match RE_USERNAME.captures(channel) {
-		Some(caps) => match caps.get(1) {
-			Some(data) => data.as_str(),
-			None => bail!("No string found in channel name"),
-		},
-		None => {
-			bail!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {channel:?}");
-		},
-	};
-	*/
 	if ! RE_USERNAME.is_match(channel) {
 		bail!("Usernames should be something like \"@\\[a\\-zA\\-Z]\\[a\\-zA\\-Z0\\-9\\_]+\", aren't they?\nNot {channel:?}");
 	};
@@ -132,8 +174,8 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 		None => None,
 	};
 	let chat_id = ChatUsername::from(channel.as_ref());
-	let channel_id = core.tg.execute(GetChat::new(chat_id.clone())).await.stack_err("gettting GetChat")?.id;
-	let chan_adm = core.tg.execute(GetChatAdministrators::new(chat_id)).await
+	let channel_id = core.tg.client.execute(GetChat::new(chat_id.clone())).await.stack_err("getting GetChat")?.id;
+	let chan_adm = core.tg.client.execute(GetChatAdministrators::new(chat_id)).await
 		.context("Sorry, I have no access to that chat.")?;
 	let (mut me, mut user) = (false, false);
 	for admin in chan_adm {
@@ -145,7 +187,7 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 			| ChatMember::Member{..}
 			| ChatMember::Restricted(_) => continue,
 		};
-		if member_id == core.me.id {
+		if member_id == core.tg.me.id {
 			me = true;
 		}
 		if member_id == sender {
@@ -155,6 +197,47 @@ pub async fn update (core: &Core, command: &str, msg: &Message, words: &[String]
 	if ! me   { bail!("I need to be admin on that channel."); };
 	if ! user { bail!("You should be admin on that channel."); };
 	let mut conn = core.db.begin().await.stack()?;
-	core.send(conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await.stack()?, Some(msg.chat.get_id()), None).await.stack()?;
+	let update = conn.update(source_id, channel, channel_id, url, iv_hash, url_re, sender).await.stack()?;
+	core.tg.send(MyMessage::html_to(update, msg.chat.get_id())).await.stack()?;
+	if command == "/add" {
+		if let Some(new_record) = conn.get_one_name(sender, channel).await.stack()? {
+			core.add_feed(sender.into(), new_record.source_id, new_record.channel).await.stack()?;
+		} else {
+			bail!("Failed to read data on freshly inserted source.");
+		}
+	};
+	Ok(())
+}
+
+pub async fn answer_cb (core: &Core, query: &CallbackQuery, cb: &str) -> Result<()> {
+	let cb: Callback = toml::from_str(cb).stack()?;
+	let sender = &query.from;
+	//let mut conn = core.db.begin().await.stack()?;
+	let text = "Sample".to_owned();
+	if let Some(msg) = &query.message {
+		match msg {
+			MaybeInaccessibleMessage::Message(message) => {
+				if let Some(owner) = message.sender.get_user()
+					&& sender == owner
+				{
+					let feeds = core.get_feeds(owner.id.into()).await.stack()?;
+					core.tg.update_message(message.chat.get_id().into(), message.id, text, &feeds, cb).await?;
+				} else {
+					core.tg.send(MyMessage::html(format!("Can't identify request sender:<br><pre>{:?}</pre>", message))).await.stack()?;
+				}
+			},
+			MaybeInaccessibleMessage::InaccessibleMessage(message) => {
+				let sender: i64 = sender.id.into();
+				if let Chat::Private(priv_chat) = &message.chat
+					&& priv_chat.id == sender
+				{
+					let feeds = core.get_feeds(priv_chat.id.into()).await.stack()?;
+					core.tg.update_message(message.chat.get_id().into(), message.message_id, text, &feeds, cb).await?;
+				} else {
+					core.tg.send(MyMessage::html(format!("Can't identify request sender:<br><pre>{:?}</pre>", message))).await.stack()?;
+				}
+			},
+		};
+	};
 	Ok(())
 }
