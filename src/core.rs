@@ -240,7 +240,7 @@ impl Core {
 			let expires = headers.get(EXPIRES);
 			let cache = headers.get(CACHE_CONTROL);
 			if expires.is_some() || cache.is_some() {
-				println!("{} {} {:?} {:?} {:?}", Local::now().to_rfc2822(), &source.url, last_scrape, expires, cache);
+				println!("{} {} {:?} {:?} {:?}", Local::now().to_rfc2822(), source.url, last_scrape, expires, cache);
 			}
 		}
 		let status = response.status();

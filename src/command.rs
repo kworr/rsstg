@@ -43,7 +43,7 @@ pub async fn command (core: &Core, command: &str, msg: &Message, words: &[String
 		.stack_err("Ignoring unreal users.")?;
 	let reply = if words.len() == 1 {
 		match words[0].parse::<i32>() {
-			Err(err) => format!("I need a number.\n{}", &err).into(),
+			Err(err) => format!("I need a number.\n{}", err).into(),
 			Ok(number) => match command {
 				"/check" => core.check(number, false, None).await
 					.context("Channel check failed.")?.into(),
