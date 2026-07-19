@@ -1,6 +1,6 @@
 [package]
 name = "rsstg"
-version = "0.5.6"
+version = "0.5.7"
 authors = ["arcade"]
 edition = "2021"
 
@@ -9,7 +9,7 @@ async-compat = "0.2.5"
 atom_syndication = { version = "0.12.4", features = [ "with-serde" ] }
 chrono = "0.4.38"
 config = { version = "0.15", default-features = false, features = [ "toml" ] }
-tgbot = "0.44"
+tgbot = "0.46"
 futures = "0.3.30"
 futures-util = "0.3.30"
 lazy_static = "1.5.0"
@@ -19,7 +19,7 @@ rss = "2.0.9"
 sedregex = "0.2.5"
 smol = "2.0.2"
 stacked_errors = "0.7.1"
-sqlx = { version = "0.8", features = [ "postgres", "runtime-tokio-rustls", "chrono", "macros" ], default-features = false }
+sqlx = { version = "0.9", features = [ "postgres", "runtime-smol", "chrono", "macros" ], default-features = false }
 url = "2.5.8"
 
 [profile.release]
