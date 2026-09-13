@@ -19,11 +19,7 @@ use chrono::{
 };
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::header::{
-	CACHE_CONTROL,
-	EXPIRES,
-	LAST_MODIFIED
-};
+use reqwest::header::LAST_MODIFIED;
 use smol::{
 	Timer,
 	lock::Mutex,
@@ -36,6 +32,7 @@ use tgbot::{
 		ChatPeerId,
 		Command,
 		GetBot,
+		InputText,
 		Message,
 		ParseMode,
 		SendMessage,
@@ -194,8 +191,8 @@ impl Core {
 		let mode = mode.unwrap_or(ParseMode::Html);
 		let target = target.unwrap_or(self.owner_chat);
 		self.tg.execute(
-			SendMessage::new(target, msg)
-				.with_parse_mode(mode)
+			SendMessage::new(target, InputText::from(msg)
+				.with_format(mode))
 		).await.stack()
 	}
 
@@ -401,8 +398,8 @@ impl UpdateHandler for Core {
 					if let Err(err2) = self.send(format!("\\#error\n```\n{err}\n```"),
 						Some(msg.chat.get_id()),
 						Some(ParseMode::MarkdownV2)
-					).await{
-						dbg!(err2);
+					).await {
+						let _ = dbg!(err2);
 					};
 				}
 			};
