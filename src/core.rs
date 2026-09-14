@@ -231,15 +231,22 @@ impl Core {
 			builder = builder.header(LAST_MODIFIED, last_scrape.to_rfc2822());
 		};
 		let response = builder.send().await.stack()?;
-		#[cfg(debug_assertions)]
-		{
+
+		// Print debug output for each response processed to track how expires
+		// are handled
+		#[cfg(debug_assertions)] {
+			use reqwest::header::{
+				EXPIRES,
+				CACHE_CONTROL,
+			};
+
 			let headers = response.headers();
 			let expires = headers.get(EXPIRES);
 			let cache = headers.get(CACHE_CONTROL);
 			if expires.is_some() || cache.is_some() {
 				println!("{} {} {:?} {:?} {:?}", Local::now().to_rfc2822(), source.url, last_scrape, expires, cache);
-			}
-		}
+		}	}
+
 		let status = response.status();
 		let content = response.bytes().await.stack()?;
 		match rss::Channel::read_from(&content[..]) {
